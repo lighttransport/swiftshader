@@ -12,7 +12,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include "VkDebug.hpp"
+#include "VkStringify.hpp"
+
+#include "System/Debug.hpp"
+
 #include <android/hardware_buffer.h>
 
 #include <errno.h>
@@ -55,7 +58,7 @@ public:
 
 						if(exportInfo->handleTypes != VK_EXTERNAL_MEMORY_HANDLE_TYPE_ANDROID_HARDWARE_BUFFER_BIT_ANDROID)
 						{
-							UNIMPLEMENTED("exportInfo->handleTypes");
+							UNSUPPORTED("VkExportMemoryAllocateInfo::handleTypes %d", int(exportInfo->handleTypes));
 						}
 						exportAhb = true;
 					}
@@ -70,7 +73,8 @@ public:
 					}
 					break;
 
-					default:;
+					default:
+						WARN("VkMemoryAllocateInfo->pNext sType = %s", vk::Stringify(createInfo->sType).c_str());
 				}
 				createInfo = createInfo->pNext;
 			}
@@ -146,7 +150,7 @@ public:
 
 	static VkResult getAhbProperties(const struct AHardwareBuffer *buffer, VkAndroidHardwareBufferPropertiesANDROID *pProperties)
 	{
-		UNIMPLEMENTED("getAhbProperties");
+		UNIMPLEMENTED("b/141698760: getAhbProperties");  // FIXME(b/141698760)
 		return VK_SUCCESS;
 	}
 

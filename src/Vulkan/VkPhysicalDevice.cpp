@@ -158,6 +158,11 @@ void PhysicalDevice::getFeatures(VkPhysicalDeviceShaderDrawParameterFeatures *fe
 	features->shaderDrawParameters = VK_FALSE;
 }
 
+void PhysicalDevice::getFeatures(VkPhysicalDeviceSeparateDepthStencilLayoutsFeaturesKHR *features) const
+{
+	features->separateDepthStencilLayouts = VK_TRUE;
+}
+
 void PhysicalDevice::getFeatures(VkPhysicalDeviceLineRasterizationFeaturesEXT *features) const
 {
 	features->rectangularLines = VK_TRUE;
@@ -421,6 +426,11 @@ void PhysicalDevice::getProperties(const VkPhysicalDeviceExternalSemaphoreInfo *
 	pExternalSemaphoreProperties->compatibleHandleTypes = 0;
 	pExternalSemaphoreProperties->exportFromImportedHandleTypes = 0;
 	pExternalSemaphoreProperties->externalSemaphoreFeatures = 0;
+}
+
+void PhysicalDevice::getProperties(VkPhysicalDeviceExternalMemoryHostPropertiesEXT *properties) const
+{
+	properties->minImportedHostPointerAlignment = REQUIRED_MEMORY_ALIGNMENT;
 }
 
 void PhysicalDevice::getProperties(VkPhysicalDeviceDriverPropertiesKHR *properties) const

@@ -12,7 +12,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include "VkDebug.hpp"
+#include "VkStringify.hpp"
+
+#include "System/Debug.hpp"
 #include "System/Linux/MemFd.hpp"
 
 #include <errno.h>
@@ -47,7 +49,7 @@ public:
 
 						if(importInfo->handleType != VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT)
 						{
-							UNIMPLEMENTED("importInfo->handleType");
+							UNSUPPORTED("VkImportMemoryFdInfoKHR::handleType %d", int(importInfo->handleType));
 						}
 						importFd = true;
 						fd = importInfo->fd;
@@ -59,13 +61,14 @@ public:
 
 						if(exportInfo->handleTypes != VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT)
 						{
-							UNIMPLEMENTED("exportInfo->handleTypes");
+							UNSUPPORTED("VkExportMemoryAllocateInfo::handleTypes %d", int(exportInfo->handleTypes));
 						}
 						exportFd = true;
 					}
 					break;
 
-					default:;
+					default:
+						WARN("VkMemoryAllocateInfo->pNext sType = %s", vk::Stringify(createInfo->sType).c_str());
 				}
 				createInfo = createInfo->pNext;
 			}

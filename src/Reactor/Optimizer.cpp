@@ -88,7 +88,7 @@ private:
 	void setLoadStoreInsts(Ice::CfgNode *, std::vector<LoadStoreInst> *);
 	bool hasLoadStoreInsts(Ice::CfgNode *node) const;
 
-	std::vector<Optimizer::Uses *> allocatedUses;
+	std::vector<Ice::Operand *> operandsWithUses;
 };
 
 void Optimizer::run(Ice::Cfg *function)
@@ -104,11 +104,12 @@ void Optimizer::run(Ice::Cfg *function)
 	optimizeStoresInSingleBasicBlock();
 	eliminateDeadCode();
 
-	for(auto uses : allocatedUses)
+	for(auto operand : operandsWithUses)
 	{
-		delete uses;
+		// Deletes the Uses instance on the operand
+		setUses(operand, nullptr);
 	}
-	allocatedUses.clear();
+	operandsWithUses.clear();
 }
 
 void Optimizer::eliminateDeadCode()
@@ -247,6 +248,14 @@ void Optimizer::eliminateLoadsFollowingSingleStore()
 				}
 
 				if(!loadTypeMatchesStore(load, store))
+				{
+					continue;
+				}
+
+				// TODO(b/148272103): InstLoad assumes that a constant ptr is an offset, rather than an
+				// absolute address. We need to make sure we don't replace a variable with a constant
+				// on this load.
+				if(llvm::isa<Ice::Constant>(storeValue))
 				{
 					continue;
 				}
@@ -411,6 +420,14 @@ void Optimizer::optimizeStoresInSingleBasicBlock()
 					if(!loadTypeMatchesStore(inst, store))
 					{
 						unmatchedLoads = true;
+						continue;
+					}
+
+					// TODO(b/148272103): InstLoad assumes that a constant ptr is an offset, rather than an
+					// absolute address. We need to make sure we don't replace a variable with a constant
+					// on this load.
+					if(llvm::isa<Ice::Constant>(storeValue))
+					{
 						continue;
 					}
 
@@ -713,13 +730,18 @@ Optimizer::Uses *Optimizer::getUses(Ice::Operand *operand)
 	{
 		uses = new Optimizer::Uses;
 		setUses(operand, uses);
-		allocatedUses.push_back(uses);
+		operandsWithUses.push_back(operand);
 	}
 	return uses;
 }
 
 void Optimizer::setUses(Ice::Operand *operand, Optimizer::Uses *uses)
 {
+	if(auto *oldUses = reinterpret_cast<Optimizer::Uses *>(operand->Ice::Operand::getExternalData()))
+	{
+		delete oldUses;
+	}
+
 	operand->Ice::Operand::setExternalData(uses);
 }
 

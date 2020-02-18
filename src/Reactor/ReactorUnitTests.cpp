@@ -13,11 +13,13 @@
 // limitations under the License.
 
 #include "Coroutine.hpp"
+#include "Print.hpp"
 #include "Reactor.hpp"
 
 #include "gtest/gtest.h"
 
 #include <cmath>
+#include <thread>
 #include <tuple>
 
 using namespace rr;
@@ -106,6 +108,206 @@ int reference(int *p, int y)
 	return sum;
 }
 
+class StdOutCapture
+{
+public:
+	~StdOutCapture()
+	{
+		stopIfCapturing();
+	}
+
+	void start()
+	{
+		stopIfCapturing();
+		capturing = true;
+		testing::internal::CaptureStdout();
+	}
+
+	std::string stop()
+	{
+		assert(capturing);
+		capturing = false;
+		return testing::internal::GetCapturedStdout();
+	}
+
+private:
+	void stopIfCapturing()
+	{
+		if(capturing)
+		{
+			// This stops the capture
+			testing::internal::GetCapturedStdout();
+		}
+	}
+
+	bool capturing = false;
+};
+
+std::vector<std::string> split(const std::string &s)
+{
+	std::vector<std::string> result;
+	std::istringstream iss(s);
+	for(std::string line; std::getline(iss, line);)
+	{
+		result.push_back(line);
+	}
+	return result;
+}
+
+TEST(ReactorUnitTests, PrintPrimitiveTypes)
+{
+#if defined(ENABLE_RR_PRINT) && !defined(ENABLE_RR_EMIT_PRINT_LOCATION)
+	FunctionT<void()> function;
+	{
+		bool b(true);
+		int8_t i8(-1);
+		uint8_t ui8(1);
+		int16_t i16(-1);
+		uint16_t ui16(1);
+		int32_t i32(-1);
+		uint32_t ui32(1);
+		int64_t i64(-1);
+		uint64_t ui64(1);
+		float f(1);
+		double d(2);
+		const char *cstr = "const char*";
+		std::string str = "std::string";
+		int *p = nullptr;
+
+		RR_WATCH(b);
+		RR_WATCH(i8);
+		RR_WATCH(ui8);
+		RR_WATCH(i16);
+		RR_WATCH(ui16);
+		RR_WATCH(i32);
+		RR_WATCH(ui32);
+		RR_WATCH(i64);
+		RR_WATCH(ui64);
+		RR_WATCH(f);
+		RR_WATCH(d);
+		RR_WATCH(cstr);
+		RR_WATCH(str);
+		RR_WATCH(p);
+	}
+
+	auto routine = function("one");
+
+	char pNullptr[64];
+	snprintf(pNullptr, sizeof(pNullptr), "  p: %p", nullptr);
+
+	const char *expected[] = {
+		"  b: true",
+		"  i8: -1",
+		"  ui8: 1",
+		"  i16: -1",
+		"  ui16: 1",
+		"  i32: -1",
+		"  ui32: 1",
+		"  i64: -1",
+		"  ui64: 1",
+		"  f: 1.000000",
+		"  d: 2.000000",
+		"  cstr: const char*",
+		"  str: std::string",
+		pNullptr,
+	};
+	constexpr size_t expectedSize = sizeof(expected) / sizeof(expected[0]);
+
+	StdOutCapture capture;
+	capture.start();
+	routine();
+	auto output = split(capture.stop());
+	for(size_t i = 0, j = 1; i < expectedSize; ++i, j += 2)
+	{
+		ASSERT_EQ(expected[i], output[j]);
+	}
+
+#endif
+}
+
+TEST(ReactorUnitTests, PrintReactorTypes)
+{
+#if defined(ENABLE_RR_PRINT) && !defined(ENABLE_RR_EMIT_PRINT_LOCATION)
+	FunctionT<void()> function;
+	{
+		Bool b(true);
+		Int i(-1);
+		Int2 i2(-1, -2);
+		Int4 i4(-1, -2, -3, -4);
+		UInt ui(1);
+		UInt2 ui2(1, 2);
+		UInt4 ui4(1, 2, 3, 4);
+		Short s(-1);
+		Short4 s4(-1, -2, -3, -4);
+		UShort us(1);
+		UShort4 us4(1, 2, 3, 4);
+		Float f(1);
+		Float4 f4(1, 2, 3, 4);
+		Long l(i);
+		Pointer<Int> pi = nullptr;
+		RValue<Int> rvi = i;
+		Byte by('a');
+		Byte4 by4(i4);
+
+		RR_WATCH(b);
+		RR_WATCH(i);
+		RR_WATCH(i2);
+		RR_WATCH(i4);
+		RR_WATCH(ui);
+		RR_WATCH(ui2);
+		RR_WATCH(ui4);
+		RR_WATCH(s);
+		RR_WATCH(s4);
+		RR_WATCH(us);
+		RR_WATCH(us4);
+		RR_WATCH(f);
+		RR_WATCH(f4);
+		RR_WATCH(l);
+		RR_WATCH(pi);
+		RR_WATCH(rvi);
+		RR_WATCH(by);
+		RR_WATCH(by4);
+	}
+
+	auto routine = function("one");
+
+	char piNullptr[64];
+	snprintf(piNullptr, sizeof(piNullptr), "  pi: %p", nullptr);
+
+	const char *expected[] = {
+		"  b: true",
+		"  i: -1",
+		"  i2: [-1, -2]",
+		"  i4: [-1, -2, -3, -4]",
+		"  ui: 1",
+		"  ui2: [1, 2]",
+		"  ui4: [1, 2, 3, 4]",
+		"  s: -1",
+		"  s4: [-1, -2, -3, -4]",
+		"  us: 1",
+		"  us4: [1, 2, 3, 4]",
+		"  f: 1.000000",
+		"  f4: [1.000000, 2.000000, 3.000000, 4.000000]",
+		"  l: -1",
+		piNullptr,
+		"  rvi: -1",
+		"  by: 97",
+		"  by4: [255, 254, 253, 252]",
+	};
+	constexpr size_t expectedSize = sizeof(expected) / sizeof(expected[0]);
+
+	StdOutCapture capture;
+	capture.start();
+	routine();
+	auto output = split(capture.stop());
+	for(size_t i = 0, j = 1; i < expectedSize; ++i, j += 2)
+	{
+		ASSERT_EQ(expected[i], output[j]);
+	}
+
+#endif
+}
+
 TEST(ReactorUnitTests, Sample)
 {
 	FunctionT<int(int *, int)> function;
@@ -131,12 +333,9 @@ TEST(ReactorUnitTests, Sample)
 
 	auto routine = function("one");
 
-	if(routine)
-	{
-		int one[2] = { 1, 0 };
-		int result = routine(&one[1], 2);
-		EXPECT_EQ(result, reference(&one[1], 2));
-	}
+	int one[2] = { 1, 0 };
+	int result = routine(&one[1], 2);
+	EXPECT_EQ(result, reference(&one[1], 2));
 }
 
 TEST(ReactorUnitTests, Uninitialized)
@@ -162,11 +361,8 @@ TEST(ReactorUnitTests, Uninitialized)
 
 	auto routine = function("one");
 
-	if(routine)
-	{
-		int result = routine();
-		EXPECT_EQ(result, result);  // Anything is fine, just don't crash
-	}
+	int result = routine();
+	EXPECT_EQ(result, result);  // Anything is fine, just don't crash
 }
 
 TEST(ReactorUnitTests, Unreachable)
@@ -186,11 +382,8 @@ TEST(ReactorUnitTests, Unreachable)
 
 	auto routine = function("one");
 
-	if(routine)
-	{
-		int result = routine(16);
-		EXPECT_EQ(result, 20);
-	}
+	int result = routine(16);
+	EXPECT_EQ(result, 20);
 }
 
 TEST(ReactorUnitTests, VariableAddress)
@@ -207,11 +400,8 @@ TEST(ReactorUnitTests, VariableAddress)
 
 	auto routine = function("one");
 
-	if(routine)
-	{
-		int result = routine(16);
-		EXPECT_EQ(result, 20);
-	}
+	int result = routine(16);
+	EXPECT_EQ(result, 20);
 }
 
 TEST(ReactorUnitTests, SubVectorLoadStore)
@@ -232,36 +422,33 @@ TEST(ReactorUnitTests, SubVectorLoadStore)
 
 	auto routine = function("one");
 
-	if(routine)
+	int8_t in[16 * 5] = { 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16,
+		                  17, 18, 19, 20, 21, 22, 23, 24, 0, 0, 0, 0, 0, 0, 0, 0,
+		                  25, 26, 27, 28, 29, 30, 31, 32, 0, 0, 0, 0, 0, 0, 0, 0,
+		                  33, 34, 35, 36, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+		                  37, 38, 39, 40, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
+
+	int8_t out[16 * 5] = { -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
+		                   -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
+		                   -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
+		                   -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
+		                   -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1 };
+
+	routine(in, out);
+
+	for(int row = 0; row < 5; row++)
 	{
-		int8_t in[16 * 5] = { 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16,
-			                  17, 18, 19, 20, 21, 22, 23, 24, 0, 0, 0, 0, 0, 0, 0, 0,
-			                  25, 26, 27, 28, 29, 30, 31, 32, 0, 0, 0, 0, 0, 0, 0, 0,
-			                  33, 34, 35, 36, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-			                  37, 38, 39, 40, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
-
-		int8_t out[16 * 5] = { -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
-			                   -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
-			                   -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
-			                   -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
-			                   -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1 };
-
-		routine(in, out);
-
-		for(int row = 0; row < 5; row++)
+		for(int col = 0; col < 16; col++)
 		{
-			for(int col = 0; col < 16; col++)
-			{
-				int i = row * 16 + col;
+			int i = row * 16 + col;
 
-				if(in[i] == 0)
-				{
-					EXPECT_EQ(out[i], -1) << "Row " << row << " column " << col << " not left untouched.";
-				}
-				else
-				{
-					EXPECT_EQ(out[i], in[i]) << "Row " << row << " column " << col << " not equal to input.";
-				}
+			if(in[i] == 0)
+			{
+				EXPECT_EQ(out[i], -1) << "Row " << row << " column " << col << " not left untouched.";
+			}
+			else
+			{
+				EXPECT_EQ(out[i], in[i]) << "Row " << row << " column " << col << " not equal to input.";
 			}
 		}
 	}
@@ -283,28 +470,25 @@ TEST(ReactorUnitTests, VectorConstant)
 
 	auto routine = function("one");
 
-	if(routine)
+	int8_t out[16 * 4] = { -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
+		                   -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
+		                   -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
+		                   -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1 };
+
+	int8_t exp[16 * 4] = { 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16,
+		                   17, 18, 19, 20, 21, 22, 23, 24, -1, -1, -1, -1, -1, -1, -1, -1,
+		                   25, 26, 27, 28, 29, 30, 31, 32, -1, -1, -1, -1, -1, -1, -1, -1,
+		                   33, 34, 35, 36, 37, 38, 39, 40, -1, -1, -1, -1, -1, -1, -1, -1 };
+
+	routine(out);
+
+	for(int row = 0; row < 4; row++)
 	{
-		int8_t out[16 * 4] = { -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
-			                   -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
-			                   -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
-			                   -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1 };
-
-		int8_t exp[16 * 4] = { 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16,
-			                   17, 18, 19, 20, 21, 22, 23, 24, -1, -1, -1, -1, -1, -1, -1, -1,
-			                   25, 26, 27, 28, 29, 30, 31, 32, -1, -1, -1, -1, -1, -1, -1, -1,
-			                   33, 34, 35, 36, 37, 38, 39, 40, -1, -1, -1, -1, -1, -1, -1, -1 };
-
-		routine(out);
-
-		for(int row = 0; row < 4; row++)
+		for(int col = 0; col < 16; col++)
 		{
-			for(int col = 0; col < 16; col++)
-			{
-				int i = row * 16 + col;
+			int i = row * 16 + col;
 
-				EXPECT_EQ(out[i], exp[i]);
-			}
+			EXPECT_EQ(out[i], exp[i]);
 		}
 	}
 }
@@ -323,253 +507,302 @@ TEST(ReactorUnitTests, Concatenate)
 
 	auto routine = function("one");
 
-	if(routine)
+	int8_t ref[16 * 5] = { 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16,
+		                   1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16 };
+
+	int8_t out[16 * 5] = { -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
+		                   -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1 };
+
+	routine(out);
+
+	for(int row = 0; row < 2; row++)
 	{
-		int8_t ref[16 * 5] = { 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16,
-			                   1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16 };
-
-		int8_t out[16 * 5] = { -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
-			                   -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1 };
-
-		routine(out);
-
-		for(int row = 0; row < 2; row++)
+		for(int col = 0; col < 16; col++)
 		{
-			for(int col = 0; col < 16; col++)
-			{
-				int i = row * 16 + col;
+			int i = row * 16 + col;
 
-				EXPECT_EQ(out[i], ref[i]) << "Row " << row << " column " << col << " not equal to reference.";
-			}
+			EXPECT_EQ(out[i], ref[i]) << "Row " << row << " column " << col << " not equal to reference.";
 		}
+	}
+}
+
+TEST(ReactorUnitTests, Cast)
+{
+	FunctionT<void(void *)> function;
+	{
+		Pointer<Byte> out = function.Arg<0>();
+
+		Int4 c = Int4(0x01020304, 0x05060708, 0x09101112, 0x13141516);
+		*Pointer<Short4>(out + 16 * 0) = Short4(c);
+		*Pointer<Byte4>(out + 16 * 1 + 0) = Byte4(c);
+		*Pointer<Byte4>(out + 16 * 1 + 4) = Byte4(As<Byte8>(c));
+		*Pointer<Byte4>(out + 16 * 1 + 8) = Byte4(As<Short4>(c));
+	}
+
+	auto routine = function("one");
+
+	int out[2][4];
+
+	memset(&out, 0, sizeof(out));
+
+	routine(&out);
+
+	EXPECT_EQ(out[0][0], 0x07080304);
+	EXPECT_EQ(out[0][1], 0x15161112);
+
+	EXPECT_EQ(out[1][0], 0x16120804);
+	EXPECT_EQ(out[1][1], 0x01020304);
+	EXPECT_EQ(out[1][2], 0x06080204);
+}
+
+static uint16_t swizzleCode4(int i)
+{
+	auto x = (i >> 0) & 0x03;
+	auto y = (i >> 2) & 0x03;
+	auto z = (i >> 4) & 0x03;
+	auto w = (i >> 6) & 0x03;
+	return static_cast<uint16_t>((x << 12) | (y << 8) | (z << 4) | (w << 0));
+}
+
+TEST(ReactorUnitTests, Swizzle4)
+{
+	FunctionT<void(void *)> function;
+	{
+		Pointer<Byte> out = function.Arg<0>();
+
+		for(int i = 0; i < 256; i++)
+		{
+			*Pointer<Float4>(out + 16 * i) = Swizzle(Float4(1.0f, 2.0f, 3.0f, 4.0f), swizzleCode4(i));
+		}
+
+		for(int i = 0; i < 256; i++)
+		{
+			*Pointer<Float4>(out + 16 * (256 + i)) = ShuffleLowHigh(Float4(1.0f, 2.0f, 3.0f, 4.0f), Float4(5.0f, 6.0f, 7.0f, 8.0f), swizzleCode4(i));
+		}
+
+		*Pointer<Float4>(out + 16 * (512 + 0)) = UnpackLow(Float4(1.0f, 2.0f, 3.0f, 4.0f), Float4(5.0f, 6.0f, 7.0f, 8.0f));
+		*Pointer<Float4>(out + 16 * (512 + 1)) = UnpackHigh(Float4(1.0f, 2.0f, 3.0f, 4.0f), Float4(5.0f, 6.0f, 7.0f, 8.0f));
+		*Pointer<Int2>(out + 16 * (512 + 2)) = UnpackLow(Short4(1, 2, 3, 4), Short4(5, 6, 7, 8));
+		*Pointer<Int2>(out + 16 * (512 + 3)) = UnpackHigh(Short4(1, 2, 3, 4), Short4(5, 6, 7, 8));
+		*Pointer<Short4>(out + 16 * (512 + 4)) = UnpackLow(Byte8(1, 2, 3, 4, 5, 6, 7, 8), Byte8(9, 10, 11, 12, 13, 14, 15, 16));
+		*Pointer<Short4>(out + 16 * (512 + 5)) = UnpackHigh(Byte8(1, 2, 3, 4, 5, 6, 7, 8), Byte8(9, 10, 11, 12, 13, 14, 15, 16));
+
+		for(int i = 0; i < 256; i++)
+		{
+			*Pointer<Short4>(out + 16 * (512 + 6) + (8 * i)) =
+			    Swizzle(Short4(1, 2, 3, 4), swizzleCode4(i));
+		}
+
+		for(int i = 0; i < 256; i++)
+		{
+			*Pointer<Int4>(out + 16 * (512 + 6 + i) + (8 * 256)) =
+			    Swizzle(Int4(1, 2, 3, 4), swizzleCode4(i));
+		}
+	}
+
+	auto routine = function("one");
+
+	struct
+	{
+		float f[256 + 256 + 2][4];
+		int i[388][4];
+	} out;
+
+	memset(&out, 0, sizeof(out));
+
+	routine(&out);
+
+	for(int i = 0; i < 256; i++)
+	{
+		EXPECT_EQ(out.f[i][0], float((i >> 0) & 0x03) + 1.0f);
+		EXPECT_EQ(out.f[i][1], float((i >> 2) & 0x03) + 1.0f);
+		EXPECT_EQ(out.f[i][2], float((i >> 4) & 0x03) + 1.0f);
+		EXPECT_EQ(out.f[i][3], float((i >> 6) & 0x03) + 1.0f);
+	}
+
+	for(int i = 0; i < 256; i++)
+	{
+		EXPECT_EQ(out.f[256 + i][0], float((i >> 0) & 0x03) + 1.0f);
+		EXPECT_EQ(out.f[256 + i][1], float((i >> 2) & 0x03) + 1.0f);
+		EXPECT_EQ(out.f[256 + i][2], float((i >> 4) & 0x03) + 5.0f);
+		EXPECT_EQ(out.f[256 + i][3], float((i >> 6) & 0x03) + 5.0f);
+	}
+
+	EXPECT_EQ(out.f[512 + 0][0], 1.0f);
+	EXPECT_EQ(out.f[512 + 0][1], 5.0f);
+	EXPECT_EQ(out.f[512 + 0][2], 2.0f);
+	EXPECT_EQ(out.f[512 + 0][3], 6.0f);
+
+	EXPECT_EQ(out.f[512 + 1][0], 3.0f);
+	EXPECT_EQ(out.f[512 + 1][1], 7.0f);
+	EXPECT_EQ(out.f[512 + 1][2], 4.0f);
+	EXPECT_EQ(out.f[512 + 1][3], 8.0f);
+
+	EXPECT_EQ(out.i[0][0], 0x00050001);
+	EXPECT_EQ(out.i[0][1], 0x00060002);
+	EXPECT_EQ(out.i[0][2], 0x00000000);
+	EXPECT_EQ(out.i[0][3], 0x00000000);
+
+	EXPECT_EQ(out.i[1][0], 0x00070003);
+	EXPECT_EQ(out.i[1][1], 0x00080004);
+	EXPECT_EQ(out.i[1][2], 0x00000000);
+	EXPECT_EQ(out.i[1][3], 0x00000000);
+
+	EXPECT_EQ(out.i[2][0], 0x0A020901);
+	EXPECT_EQ(out.i[2][1], 0x0C040B03);
+	EXPECT_EQ(out.i[2][2], 0x00000000);
+	EXPECT_EQ(out.i[2][3], 0x00000000);
+
+	EXPECT_EQ(out.i[3][0], 0x0E060D05);
+	EXPECT_EQ(out.i[3][1], 0x10080F07);
+	EXPECT_EQ(out.i[3][2], 0x00000000);
+	EXPECT_EQ(out.i[3][3], 0x00000000);
+
+	for(int i = 0; i < 256; i++)
+	{
+		EXPECT_EQ(out.i[4 + i / 2][0 + (i % 2) * 2] & 0xFFFF,
+		          ((i >> 0) & 0x03) + 1);
+		EXPECT_EQ(out.i[4 + i / 2][0 + (i % 2) * 2] >> 16,
+		          ((i >> 2) & 0x03) + 1);
+		EXPECT_EQ(out.i[4 + i / 2][1 + (i % 2) * 2] & 0xFFFF,
+		          ((i >> 4) & 0x03) + 1);
+		EXPECT_EQ(out.i[4 + i / 2][1 + (i % 2) * 2] >> 16,
+		          ((i >> 6) & 0x03) + 1);
+	}
+
+	for(int i = 0; i < 256; i++)
+	{
+		EXPECT_EQ(out.i[132 + i][0], ((i >> 0) & 0x03) + 1);
+		EXPECT_EQ(out.i[132 + i][1], ((i >> 2) & 0x03) + 1);
+		EXPECT_EQ(out.i[132 + i][2], ((i >> 4) & 0x03) + 1);
+		EXPECT_EQ(out.i[132 + i][3], ((i >> 6) & 0x03) + 1);
 	}
 }
 
 TEST(ReactorUnitTests, Swizzle)
 {
-	auto swizzleCode = [](int i) -> uint16_t {
-		auto x = (i >> 0) & 0x03;
-		auto y = (i >> 2) & 0x03;
-		auto z = (i >> 4) & 0x03;
-		auto w = (i >> 6) & 0x03;
-		return (x << 12) | (y << 8) | (z << 4) | (w << 0);
-	};
-
+	FunctionT<void(void *)> function;
 	{
-		FunctionT<int(void *)> function;
-		{
-			Pointer<Byte> out = function.Arg<0>();
+		Pointer<Byte> out = function.Arg<0>();
 
-			for(int i = 0; i < 256; i++)
-			{
-				*Pointer<Float4>(out + 16 * i) = Swizzle(Float4(1.0f, 2.0f, 3.0f, 4.0f), swizzleCode(i));
-			}
-
-			for(int i = 0; i < 256; i++)
-			{
-				*Pointer<Float4>(out + 16 * (256 + i)) = ShuffleLowHigh(Float4(1.0f, 2.0f, 3.0f, 4.0f), Float4(5.0f, 6.0f, 7.0f, 8.0f), swizzleCode(i));
-			}
-
-			*Pointer<Float4>(out + 16 * (512 + 0)) = UnpackLow(Float4(1.0f, 2.0f, 3.0f, 4.0f), Float4(5.0f, 6.0f, 7.0f, 8.0f));
-			*Pointer<Float4>(out + 16 * (512 + 1)) = UnpackHigh(Float4(1.0f, 2.0f, 3.0f, 4.0f), Float4(5.0f, 6.0f, 7.0f, 8.0f));
-			*Pointer<Int2>(out + 16 * (512 + 2)) = UnpackLow(Short4(1, 2, 3, 4), Short4(5, 6, 7, 8));
-			*Pointer<Int2>(out + 16 * (512 + 3)) = UnpackHigh(Short4(1, 2, 3, 4), Short4(5, 6, 7, 8));
-			*Pointer<Short4>(out + 16 * (512 + 4)) = UnpackLow(Byte8(1, 2, 3, 4, 5, 6, 7, 8), Byte8(9, 10, 11, 12, 13, 14, 15, 16));
-			*Pointer<Short4>(out + 16 * (512 + 5)) = UnpackHigh(Byte8(1, 2, 3, 4, 5, 6, 7, 8), Byte8(9, 10, 11, 12, 13, 14, 15, 16));
-
-			for(int i = 0; i < 256; i++)
-			{
-				*Pointer<Short4>(out + 16 * (512 + 6) + (8 * i)) =
-				    Swizzle(Short4(1, 2, 3, 4), swizzleCode(i));
-			}
-
-			for(int i = 0; i < 256; i++)
-			{
-				*Pointer<Int4>(out + 16 * (512 + 6 + i) + (8 * 256)) =
-				    Swizzle(Int4(1, 2, 3, 4), swizzleCode(i));
-			}
-
-			Return(0);
-		}
-
-		auto routine = function("one");
-
-		if(routine)
-		{
-			struct
-			{
-				float f[256 + 256 + 2][4];
-				int i[388][4];
-			} out;
-
-			memset(&out, 0, sizeof(out));
-
-			routine(&out);
-
-			for(int i = 0; i < 256; i++)
-			{
-				EXPECT_EQ(out.f[i][0], float((i >> 0) & 0x03) + 1.0f);
-				EXPECT_EQ(out.f[i][1], float((i >> 2) & 0x03) + 1.0f);
-				EXPECT_EQ(out.f[i][2], float((i >> 4) & 0x03) + 1.0f);
-				EXPECT_EQ(out.f[i][3], float((i >> 6) & 0x03) + 1.0f);
-			}
-
-			for(int i = 0; i < 256; i++)
-			{
-				EXPECT_EQ(out.f[256 + i][0], float((i >> 0) & 0x03) + 1.0f);
-				EXPECT_EQ(out.f[256 + i][1], float((i >> 2) & 0x03) + 1.0f);
-				EXPECT_EQ(out.f[256 + i][2], float((i >> 4) & 0x03) + 5.0f);
-				EXPECT_EQ(out.f[256 + i][3], float((i >> 6) & 0x03) + 5.0f);
-			}
-
-			EXPECT_EQ(out.f[512 + 0][0], 1.0f);
-			EXPECT_EQ(out.f[512 + 0][1], 5.0f);
-			EXPECT_EQ(out.f[512 + 0][2], 2.0f);
-			EXPECT_EQ(out.f[512 + 0][3], 6.0f);
-
-			EXPECT_EQ(out.f[512 + 1][0], 3.0f);
-			EXPECT_EQ(out.f[512 + 1][1], 7.0f);
-			EXPECT_EQ(out.f[512 + 1][2], 4.0f);
-			EXPECT_EQ(out.f[512 + 1][3], 8.0f);
-
-			EXPECT_EQ(out.i[0][0], 0x00050001);
-			EXPECT_EQ(out.i[0][1], 0x00060002);
-			EXPECT_EQ(out.i[0][2], 0x00000000);
-			EXPECT_EQ(out.i[0][3], 0x00000000);
-
-			EXPECT_EQ(out.i[1][0], 0x00070003);
-			EXPECT_EQ(out.i[1][1], 0x00080004);
-			EXPECT_EQ(out.i[1][2], 0x00000000);
-			EXPECT_EQ(out.i[1][3], 0x00000000);
-
-			EXPECT_EQ(out.i[2][0], 0x0A020901);
-			EXPECT_EQ(out.i[2][1], 0x0C040B03);
-			EXPECT_EQ(out.i[2][2], 0x00000000);
-			EXPECT_EQ(out.i[2][3], 0x00000000);
-
-			EXPECT_EQ(out.i[3][0], 0x0E060D05);
-			EXPECT_EQ(out.i[3][1], 0x10080F07);
-			EXPECT_EQ(out.i[3][2], 0x00000000);
-			EXPECT_EQ(out.i[3][3], 0x00000000);
-
-			for(int i = 0; i < 256; i++)
-			{
-				EXPECT_EQ(out.i[4 + i / 2][0 + (i % 2) * 2] & 0xFFFF,
-				          ((i >> 0) & 0x03) + 1);
-				EXPECT_EQ(out.i[4 + i / 2][0 + (i % 2) * 2] >> 16,
-				          ((i >> 2) & 0x03) + 1);
-				EXPECT_EQ(out.i[4 + i / 2][1 + (i % 2) * 2] & 0xFFFF,
-				          ((i >> 4) & 0x03) + 1);
-				EXPECT_EQ(out.i[4 + i / 2][1 + (i % 2) * 2] >> 16,
-				          ((i >> 6) & 0x03) + 1);
-			}
-
-			for(int i = 0; i < 256; i++)
-			{
-				EXPECT_EQ(out.i[132 + i][0], ((i >> 0) & 0x03) + 1);
-				EXPECT_EQ(out.i[132 + i][1], ((i >> 2) & 0x03) + 1);
-				EXPECT_EQ(out.i[132 + i][2], ((i >> 4) & 0x03) + 1);
-				EXPECT_EQ(out.i[132 + i][3], ((i >> 6) & 0x03) + 1);
-			}
-		}
+		Int4 c = Int4(0x01020304, 0x05060708, 0x09101112, 0x13141516);
+		*Pointer<Byte16>(out + 16 * 0) = Swizzle(As<Byte16>(c), 0xFEDCBA9876543210ull);
+		*Pointer<Byte8>(out + 16 * 1) = Swizzle(As<Byte8>(c), 0x76543210u);
+		*Pointer<UShort8>(out + 16 * 2) = Swizzle(As<UShort8>(c), 0x76543210u);
 	}
+
+	auto routine = function("one");
+
+	int out[3][4];
+
+	memset(&out, 0, sizeof(out));
+
+	routine(&out);
+
+	EXPECT_EQ(out[0][0], 0x16151413);
+	EXPECT_EQ(out[0][1], 0x12111009);
+	EXPECT_EQ(out[0][2], 0x08070605);
+	EXPECT_EQ(out[0][3], 0x04030201);
+
+	EXPECT_EQ(out[1][0], 0x08070605);
+	EXPECT_EQ(out[1][1], 0x04030201);
+
+	EXPECT_EQ(out[2][0], 0x15161314);
+	EXPECT_EQ(out[2][1], 0x11120910);
+	EXPECT_EQ(out[2][2], 0x07080506);
+	EXPECT_EQ(out[2][3], 0x03040102);
 }
 
 TEST(ReactorUnitTests, Shuffle)
 {
+	// |select| is [0aaa:0bbb:0ccc:0ddd] where |aaa|, |bbb|, |ccc|
+	// and |ddd| are 7-bit selection indices. For a total (1 << 12)
+	// possibilities.
+	const int kSelectRange = 1 << 12;
+
+	// Unfortunately, testing the whole kSelectRange results in a test
+	// that is far too slow to run, because LLVM spends exponentially more
+	// time optimizing the function below as the number of test cases
+	// increases.
+	//
+	// To work-around the problem, only test a subset of the range by
+	// skipping every kRangeIncrement value.
+	//
+	// Set this value to 1 if you want to test the whole implementation,
+	// which will take a little less than 2 minutes on a fast workstation.
+	//
+	// The default value here takes about 1390ms, which is a little more than
+	// what the Swizzle test takes (993 ms) on my machine. A non-power-of-2
+	// value ensures a better spread over possible values.
+	const int kRangeIncrement = 11;
+
+	auto rangeIndexToSelect = [](int i) {
+		return static_cast<unsigned short>(
+		    (((i >> 9) & 7) << 0) |
+		    (((i >> 6) & 7) << 4) |
+		    (((i >> 3) & 7) << 8) |
+		    (((i >> 0) & 7) << 12));
+	};
+
+	FunctionT<int(void *)> function;
 	{
-		// |select| is [0aaa:0bbb:0ccc:0ddd] where |aaa|, |bbb|, |ccc|
-		// and |ddd| are 7-bit selection indices. For a total (1 << 12)
-		// possibilities.
-		const int kSelectRange = 1 << 12;
+		Pointer<Byte> out = function.Arg<0>();
 
-		// Unfortunately, testing the whole kSelectRange results in a test
-		// that is far too slow to run, because LLVM spends exponentially more
-		// time optimizing the function below as the number of test cases
-		// increases.
-		//
-		// To work-around the problem, only test a subset of the range by
-		// skipping every kRangeIncrement value.
-		//
-		// Set this value to 1 if you want to test the whole implementation,
-		// which will take a little less than 2 minutes on a fast workstation.
-		//
-		// The default value here takes about 1390ms, which is a little more than
-		// what the Swizzle test takes (993 ms) on my machine. A non-power-of-2
-		// value ensures a better spread over possible values.
-		const int kRangeIncrement = 11;
-
-		auto rangeIndexToSelect = [](int i) {
-			return static_cast<unsigned short>(
-			    (((i >> 9) & 7) << 0) |
-			    (((i >> 6) & 7) << 4) |
-			    (((i >> 3) & 7) << 8) |
-			    (((i >> 0) & 7) << 12));
-		};
-
-		FunctionT<int(void *)> function;
+		for(int i = 0; i < kSelectRange; i += kRangeIncrement)
 		{
-			Pointer<Byte> out = function.Arg<0>();
+			unsigned short select = rangeIndexToSelect(i);
 
-			for(int i = 0; i < kSelectRange; i += kRangeIncrement)
-			{
-				unsigned short select = rangeIndexToSelect(i);
+			*Pointer<Float4>(out + 16 * i) = Shuffle(Float4(1.0f, 2.0f, 3.0f, 4.0f),
+			                                         Float4(5.0f, 6.0f, 7.0f, 8.0f),
+			                                         select);
 
-				*Pointer<Float4>(out + 16 * i) = Shuffle(Float4(1.0f, 2.0f, 3.0f, 4.0f),
-				                                         Float4(5.0f, 6.0f, 7.0f, 8.0f),
-				                                         select);
+			*Pointer<Int4>(out + (kSelectRange + i) * 16) = Shuffle(Int4(10, 11, 12, 13),
+			                                                        Int4(14, 15, 16, 17),
+			                                                        select);
 
-				*Pointer<Int4>(out + (kSelectRange + i) * 16) = Shuffle(Int4(10, 11, 12, 13),
-				                                                        Int4(14, 15, 16, 17),
-				                                                        select);
-
-				*Pointer<UInt4>(out + (2 * kSelectRange + i) * 16) = Shuffle(UInt4(100, 101, 102, 103),
-				                                                             UInt4(104, 105, 106, 107),
-				                                                             select);
-			}
-
-			Return(0);
+			*Pointer<UInt4>(out + (2 * kSelectRange + i) * 16) = Shuffle(UInt4(100, 101, 102, 103),
+			                                                             UInt4(104, 105, 106, 107),
+			                                                             select);
 		}
 
-		auto routine = function("one");
+		Return(0);
+	}
 
-		if(routine)
-		{
-			struct
-			{
-				float f[kSelectRange][4];
-				int i[kSelectRange][4];
-				unsigned u[kSelectRange][4];
-			} out;
+	auto routine = function("one");
 
-			memset(&out, 0, sizeof(out));
+	struct
+	{
+		float f[kSelectRange][4];
+		int i[kSelectRange][4];
+		unsigned u[kSelectRange][4];
+	} out;
 
-			routine(&out);
+	memset(&out, 0, sizeof(out));
 
-			for(int i = 0; i < kSelectRange; i += kRangeIncrement)
-			{
-				EXPECT_EQ(out.f[i][0], float(1.0f + (i & 7)));
-				EXPECT_EQ(out.f[i][1], float(1.0f + ((i >> 3) & 7)));
-				EXPECT_EQ(out.f[i][2], float(1.0f + ((i >> 6) & 7)));
-				EXPECT_EQ(out.f[i][3], float(1.0f + ((i >> 9) & 7)));
-			}
+	routine(&out);
 
-			for(int i = 0; i < kSelectRange; i += kRangeIncrement)
-			{
-				EXPECT_EQ(out.i[i][0], int(10 + (i & 7)));
-				EXPECT_EQ(out.i[i][1], int(10 + ((i >> 3) & 7)));
-				EXPECT_EQ(out.i[i][2], int(10 + ((i >> 6) & 7)));
-				EXPECT_EQ(out.i[i][3], int(10 + ((i >> 9) & 7)));
-			}
+	for(int i = 0; i < kSelectRange; i += kRangeIncrement)
+	{
+		EXPECT_EQ(out.f[i][0], float(1.0f + (i & 7)));
+		EXPECT_EQ(out.f[i][1], float(1.0f + ((i >> 3) & 7)));
+		EXPECT_EQ(out.f[i][2], float(1.0f + ((i >> 6) & 7)));
+		EXPECT_EQ(out.f[i][3], float(1.0f + ((i >> 9) & 7)));
+	}
 
-			for(int i = 0; i < kSelectRange; i += kRangeIncrement)
-			{
-				EXPECT_EQ(out.u[i][0], unsigned(100 + (i & 7)));
-				EXPECT_EQ(out.u[i][1], unsigned(100 + ((i >> 3) & 7)));
-				EXPECT_EQ(out.u[i][2], unsigned(100 + ((i >> 6) & 7)));
-				EXPECT_EQ(out.u[i][3], unsigned(100 + ((i >> 9) & 7)));
-			}
-		}
+	for(int i = 0; i < kSelectRange; i += kRangeIncrement)
+	{
+		EXPECT_EQ(out.i[i][0], int(10 + (i & 7)));
+		EXPECT_EQ(out.i[i][1], int(10 + ((i >> 3) & 7)));
+		EXPECT_EQ(out.i[i][2], int(10 + ((i >> 6) & 7)));
+		EXPECT_EQ(out.i[i][3], int(10 + ((i >> 9) & 7)));
+	}
+
+	for(int i = 0; i < kSelectRange; i += kRangeIncrement)
+	{
+		EXPECT_EQ(out.u[i][0], unsigned(100 + (i & 7)));
+		EXPECT_EQ(out.u[i][1], unsigned(100 + ((i >> 3) & 7)));
+		EXPECT_EQ(out.u[i][2], unsigned(100 + ((i >> 6) & 7)));
+		EXPECT_EQ(out.u[i][3], unsigned(100 + ((i >> 9) & 7)));
 	}
 }
 
@@ -622,12 +855,9 @@ TEST(ReactorUnitTests, Branching)
 
 	auto routine = function("one");
 
-	if(routine)
-	{
-		int result = routine();
+	int result = routine();
 
-		EXPECT_EQ(result, 1000402222);
-	}
+	EXPECT_EQ(result, 1000402222);
 }
 
 TEST(ReactorUnitTests, MinMax)
@@ -654,64 +884,61 @@ TEST(ReactorUnitTests, MinMax)
 
 	auto routine = function("one");
 
-	if(routine)
-	{
-		unsigned int out[10][4];
+	unsigned int out[10][4];
 
-		memset(&out, 0, sizeof(out));
+	memset(&out, 0, sizeof(out));
 
-		routine(&out);
+	routine(&out);
 
-		EXPECT_EQ(out[0][0], 0x00000000u);
-		EXPECT_EQ(out[0][1], 0x00000000u);
-		EXPECT_EQ(out[0][2], 0x00000000u);
-		EXPECT_EQ(out[0][3], 0x80000000u);
+	EXPECT_EQ(out[0][0], 0x00000000u);
+	EXPECT_EQ(out[0][1], 0x00000000u);
+	EXPECT_EQ(out[0][2], 0x00000000u);
+	EXPECT_EQ(out[0][3], 0x80000000u);
 
-		EXPECT_EQ(out[1][0], 0x3F800000u);
-		EXPECT_EQ(out[1][1], 0x3F800000u);
-		EXPECT_EQ(out[1][2], 0x00000000u);
-		EXPECT_EQ(out[1][3], 0x80000000u);
+	EXPECT_EQ(out[1][0], 0x3F800000u);
+	EXPECT_EQ(out[1][1], 0x3F800000u);
+	EXPECT_EQ(out[1][2], 0x00000000u);
+	EXPECT_EQ(out[1][3], 0x80000000u);
 
-		EXPECT_EQ(out[2][0], 0x00000000u);
-		EXPECT_EQ(out[2][1], 0x00000000u);
-		EXPECT_EQ(out[2][2], 0xFFFFFFFFu);
-		EXPECT_EQ(out[2][3], 0x00000000u);
+	EXPECT_EQ(out[2][0], 0x00000000u);
+	EXPECT_EQ(out[2][1], 0x00000000u);
+	EXPECT_EQ(out[2][2], 0xFFFFFFFFu);
+	EXPECT_EQ(out[2][3], 0x00000000u);
 
-		EXPECT_EQ(out[3][0], 0x00000001u);
-		EXPECT_EQ(out[3][1], 0x00000001u);
-		EXPECT_EQ(out[3][2], 0x00000000u);
-		EXPECT_EQ(out[3][3], 0x00000000u);
+	EXPECT_EQ(out[3][0], 0x00000001u);
+	EXPECT_EQ(out[3][1], 0x00000001u);
+	EXPECT_EQ(out[3][2], 0x00000000u);
+	EXPECT_EQ(out[3][3], 0x00000000u);
 
-		EXPECT_EQ(out[4][0], 0x00000000u);
-		EXPECT_EQ(out[4][1], 0x00000000u);
-		EXPECT_EQ(out[4][2], 0x00000000u);
-		EXPECT_EQ(out[4][3], 0x00000000u);
+	EXPECT_EQ(out[4][0], 0x00000000u);
+	EXPECT_EQ(out[4][1], 0x00000000u);
+	EXPECT_EQ(out[4][2], 0x00000000u);
+	EXPECT_EQ(out[4][3], 0x00000000u);
 
-		EXPECT_EQ(out[5][0], 0x00000001u);
-		EXPECT_EQ(out[5][1], 0x00000001u);
-		EXPECT_EQ(out[5][2], 0xFFFFFFFFu);
-		EXPECT_EQ(out[5][3], 0x00000000u);
+	EXPECT_EQ(out[5][0], 0x00000001u);
+	EXPECT_EQ(out[5][1], 0x00000001u);
+	EXPECT_EQ(out[5][2], 0xFFFFFFFFu);
+	EXPECT_EQ(out[5][3], 0x00000000u);
 
-		EXPECT_EQ(out[6][0], 0x00000000u);
-		EXPECT_EQ(out[6][1], 0x0000FFFFu);
-		EXPECT_EQ(out[6][2], 0x00000000u);
-		EXPECT_EQ(out[6][3], 0x00000000u);
+	EXPECT_EQ(out[6][0], 0x00000000u);
+	EXPECT_EQ(out[6][1], 0x0000FFFFu);
+	EXPECT_EQ(out[6][2], 0x00000000u);
+	EXPECT_EQ(out[6][3], 0x00000000u);
 
-		EXPECT_EQ(out[7][0], 0x00010001u);
-		EXPECT_EQ(out[7][1], 0x00000000u);
-		EXPECT_EQ(out[7][2], 0x00000000u);
-		EXPECT_EQ(out[7][3], 0x00000000u);
+	EXPECT_EQ(out[7][0], 0x00010001u);
+	EXPECT_EQ(out[7][1], 0x00000000u);
+	EXPECT_EQ(out[7][2], 0x00000000u);
+	EXPECT_EQ(out[7][3], 0x00000000u);
 
-		EXPECT_EQ(out[8][0], 0x00000000u);
-		EXPECT_EQ(out[8][1], 0x00000000u);
-		EXPECT_EQ(out[8][2], 0x00000000u);
-		EXPECT_EQ(out[8][3], 0x00000000u);
+	EXPECT_EQ(out[8][0], 0x00000000u);
+	EXPECT_EQ(out[8][1], 0x00000000u);
+	EXPECT_EQ(out[8][2], 0x00000000u);
+	EXPECT_EQ(out[8][3], 0x00000000u);
 
-		EXPECT_EQ(out[9][0], 0x00010001u);
-		EXPECT_EQ(out[9][1], 0x0000FFFFu);
-		EXPECT_EQ(out[9][2], 0x00000000u);
-		EXPECT_EQ(out[9][3], 0x00000000u);
-	}
+	EXPECT_EQ(out[9][0], 0x00010001u);
+	EXPECT_EQ(out[9][1], 0x0000FFFFu);
+	EXPECT_EQ(out[9][2], 0x00000000u);
+	EXPECT_EQ(out[9][3], 0x00000000u);
 }
 
 TEST(ReactorUnitTests, NotNeg)
@@ -737,59 +964,56 @@ TEST(ReactorUnitTests, NotNeg)
 
 	auto routine = function("one");
 
-	if(routine)
-	{
-		unsigned int out[10][4];
+	unsigned int out[10][4];
 
-		memset(&out, 0, sizeof(out));
+	memset(&out, 0, sizeof(out));
 
-		routine(&out);
+	routine(&out);
 
-		EXPECT_EQ(out[0][0], 0xAAAAAAAAu);
-		EXPECT_EQ(out[0][1], 0x00000000u);
-		EXPECT_EQ(out[0][2], 0x00000000u);
-		EXPECT_EQ(out[0][3], 0x00000000u);
+	EXPECT_EQ(out[0][0], 0xAAAAAAAAu);
+	EXPECT_EQ(out[0][1], 0x00000000u);
+	EXPECT_EQ(out[0][2], 0x00000000u);
+	EXPECT_EQ(out[0][3], 0x00000000u);
 
-		EXPECT_EQ(out[1][0], 0x0000AAAAu);
-		EXPECT_EQ(out[1][1], 0x00000000u);
-		EXPECT_EQ(out[1][2], 0x00000000u);
-		EXPECT_EQ(out[1][3], 0x00000000u);
+	EXPECT_EQ(out[1][0], 0x0000AAAAu);
+	EXPECT_EQ(out[1][1], 0x00000000u);
+	EXPECT_EQ(out[1][2], 0x00000000u);
+	EXPECT_EQ(out[1][3], 0x00000000u);
 
-		EXPECT_EQ(out[2][0], 0xAAAAAAAAu);
-		EXPECT_EQ(out[2][1], 0x55555555u);
-		EXPECT_EQ(out[2][2], 0xFFFFFFFFu);
-		EXPECT_EQ(out[2][3], 0x00000000u);
+	EXPECT_EQ(out[2][0], 0xAAAAAAAAu);
+	EXPECT_EQ(out[2][1], 0x55555555u);
+	EXPECT_EQ(out[2][2], 0xFFFFFFFFu);
+	EXPECT_EQ(out[2][3], 0x00000000u);
 
-		EXPECT_EQ(out[3][0], 0x5555AAAAu);
-		EXPECT_EQ(out[3][1], 0x0000FFFFu);
-		EXPECT_EQ(out[3][2], 0x00000000u);
-		EXPECT_EQ(out[3][3], 0x00000000u);
+	EXPECT_EQ(out[3][0], 0x5555AAAAu);
+	EXPECT_EQ(out[3][1], 0x0000FFFFu);
+	EXPECT_EQ(out[3][2], 0x00000000u);
+	EXPECT_EQ(out[3][3], 0x00000000u);
 
-		EXPECT_EQ(out[4][0], 0xAAAAAAABu);
-		EXPECT_EQ(out[4][1], 0x00000000u);
-		EXPECT_EQ(out[4][2], 0x00000000u);
-		EXPECT_EQ(out[4][3], 0x00000000u);
+	EXPECT_EQ(out[4][0], 0xAAAAAAABu);
+	EXPECT_EQ(out[4][1], 0x00000000u);
+	EXPECT_EQ(out[4][2], 0x00000000u);
+	EXPECT_EQ(out[4][3], 0x00000000u);
 
-		EXPECT_EQ(out[5][0], 0x0000AAABu);
-		EXPECT_EQ(out[5][1], 0x00000000u);
-		EXPECT_EQ(out[5][2], 0x00000000u);
-		EXPECT_EQ(out[5][3], 0x00000000u);
+	EXPECT_EQ(out[5][0], 0x0000AAABu);
+	EXPECT_EQ(out[5][1], 0x00000000u);
+	EXPECT_EQ(out[5][2], 0x00000000u);
+	EXPECT_EQ(out[5][3], 0x00000000u);
 
-		EXPECT_EQ(out[6][0], 0xAAAAAAABu);
-		EXPECT_EQ(out[6][1], 0x55555556u);
-		EXPECT_EQ(out[6][2], 0x00000000u);
-		EXPECT_EQ(out[6][3], 0x00000001u);
+	EXPECT_EQ(out[6][0], 0xAAAAAAABu);
+	EXPECT_EQ(out[6][1], 0x55555556u);
+	EXPECT_EQ(out[6][2], 0x00000000u);
+	EXPECT_EQ(out[6][3], 0x00000001u);
 
-		EXPECT_EQ(out[7][0], 0x5556AAABu);
-		EXPECT_EQ(out[7][1], 0x00010000u);
-		EXPECT_EQ(out[7][2], 0x00000000u);
-		EXPECT_EQ(out[7][3], 0x00000000u);
+	EXPECT_EQ(out[7][0], 0x5556AAABu);
+	EXPECT_EQ(out[7][1], 0x00010000u);
+	EXPECT_EQ(out[7][2], 0x00000000u);
+	EXPECT_EQ(out[7][3], 0x00000000u);
 
-		EXPECT_EQ(out[8][0], 0xBF800000u);
-		EXPECT_EQ(out[8][1], 0x3F800000u);
-		EXPECT_EQ(out[8][2], 0x80000000u);
-		EXPECT_EQ(out[8][3], 0x00000000u);
-	}
+	EXPECT_EQ(out[8][0], 0xBF800000u);
+	EXPECT_EQ(out[8][1], 0x3F800000u);
+	EXPECT_EQ(out[8][2], 0x80000000u);
+	EXPECT_EQ(out[8][3], 0x00000000u);
 }
 
 TEST(ReactorUnitTests, FPtoUI)
@@ -810,24 +1034,21 @@ TEST(ReactorUnitTests, FPtoUI)
 
 	auto routine = function("one");
 
-	if(routine)
-	{
-		unsigned int out[2][4];
+	unsigned int out[2][4];
 
-		memset(&out, 0, sizeof(out));
+	memset(&out, 0, sizeof(out));
 
-		routine(&out);
+	routine(&out);
 
-		EXPECT_EQ(out[0][0], 0xF0000000u);
-		EXPECT_EQ(out[0][1], 0xC0000000u);
-		EXPECT_EQ(out[0][2], 0x00000001u);
-		EXPECT_EQ(out[0][3], 0xF000F000u);
+	EXPECT_EQ(out[0][0], 0xF0000000u);
+	EXPECT_EQ(out[0][1], 0xC0000000u);
+	EXPECT_EQ(out[0][2], 0x00000001u);
+	EXPECT_EQ(out[0][3], 0xF000F000u);
 
-		EXPECT_EQ(out[1][0], 0xF0000000u);
-		EXPECT_EQ(out[1][1], 0x80000000u);
-		EXPECT_EQ(out[1][2], 0x00000000u);
-		EXPECT_EQ(out[1][3], 0xCCCC0000u);
-	}
+	EXPECT_EQ(out[1][0], 0xF0000000u);
+	EXPECT_EQ(out[1][1], 0x80000000u);
+	EXPECT_EQ(out[1][2], 0x00000000u);
+	EXPECT_EQ(out[1][3], 0xCCCC0000u);
 }
 
 TEST(ReactorUnitTests, VectorCompare)
@@ -849,40 +1070,37 @@ TEST(ReactorUnitTests, VectorCompare)
 
 	auto routine = function("one");
 
-	if(routine)
-	{
-		unsigned int out[6][4];
+	unsigned int out[6][4];
 
-		memset(&out, 0, sizeof(out));
+	memset(&out, 0, sizeof(out));
 
-		routine(&out);
+	routine(&out);
 
-		EXPECT_EQ(out[0][0], 0x00000000u);
-		EXPECT_EQ(out[0][1], 0xFFFFFFFFu);
-		EXPECT_EQ(out[0][2], 0xFFFFFFFFu);
-		EXPECT_EQ(out[0][3], 0xFFFFFFFFu);
+	EXPECT_EQ(out[0][0], 0x00000000u);
+	EXPECT_EQ(out[0][1], 0xFFFFFFFFu);
+	EXPECT_EQ(out[0][2], 0xFFFFFFFFu);
+	EXPECT_EQ(out[0][3], 0xFFFFFFFFu);
 
-		EXPECT_EQ(out[1][0], 0x00000000u);
-		EXPECT_EQ(out[1][1], 0x00000000u);
-		EXPECT_EQ(out[1][2], 0x00000000u);
-		EXPECT_EQ(out[1][3], 0xFFFFFFFFu);
+	EXPECT_EQ(out[1][0], 0x00000000u);
+	EXPECT_EQ(out[1][1], 0x00000000u);
+	EXPECT_EQ(out[1][2], 0x00000000u);
+	EXPECT_EQ(out[1][3], 0xFFFFFFFFu);
 
-		EXPECT_EQ(out[2][0], 0xFF000000u);
-		EXPECT_EQ(out[2][1], 0x00000000u);
+	EXPECT_EQ(out[2][0], 0xFF000000u);
+	EXPECT_EQ(out[2][1], 0x00000000u);
 
-		EXPECT_EQ(out[3][0], 0xFFFFFFFFu);
-		EXPECT_EQ(out[3][1], 0xFFFFFFFFu);
-		EXPECT_EQ(out[3][2], 0xFFFFFFFFu);
-		EXPECT_EQ(out[3][3], 0xFFFFFFFFu);
+	EXPECT_EQ(out[3][0], 0xFFFFFFFFu);
+	EXPECT_EQ(out[3][1], 0xFFFFFFFFu);
+	EXPECT_EQ(out[3][2], 0xFFFFFFFFu);
+	EXPECT_EQ(out[3][3], 0xFFFFFFFFu);
 
-		EXPECT_EQ(out[4][0], 0xFFFFFFFFu);
-		EXPECT_EQ(out[4][1], 0x00000000u);
-		EXPECT_EQ(out[4][2], 0x00000000u);
-		EXPECT_EQ(out[4][3], 0xFFFFFFFFu);
+	EXPECT_EQ(out[4][0], 0xFFFFFFFFu);
+	EXPECT_EQ(out[4][1], 0x00000000u);
+	EXPECT_EQ(out[4][2], 0x00000000u);
+	EXPECT_EQ(out[4][3], 0xFFFFFFFFu);
 
-		EXPECT_EQ(out[5][0], 0x00000000u);
-		EXPECT_EQ(out[5][1], 0xFFFFFFFFu);
-	}
+	EXPECT_EQ(out[5][0], 0x00000000u);
+	EXPECT_EQ(out[5][1], 0xFFFFFFFFu);
 }
 
 TEST(ReactorUnitTests, SaturatedAddAndSubtract)
@@ -939,56 +1157,53 @@ TEST(ReactorUnitTests, SaturatedAddAndSubtract)
 
 	auto routine = function("one");
 
-	if(routine)
-	{
-		unsigned int out[14][2];
+	unsigned int out[14][2];
 
-		memset(&out, 0, sizeof(out));
+	memset(&out, 0, sizeof(out));
 
-		routine(&out);
+	routine(&out);
 
-		EXPECT_EQ(out[0][0], 0x08080808u);
-		EXPECT_EQ(out[0][1], 0x08080808u);
+	EXPECT_EQ(out[0][0], 0x08080808u);
+	EXPECT_EQ(out[0][1], 0x08080808u);
 
-		EXPECT_EQ(out[1][0], 0xFFFFFFFFu);
-		EXPECT_EQ(out[1][1], 0xFEFFFFFFu);
+	EXPECT_EQ(out[1][0], 0xFFFFFFFFu);
+	EXPECT_EQ(out[1][1], 0xFEFFFFFFu);
 
-		EXPECT_EQ(out[2][0], 0x00000000u);
-		EXPECT_EQ(out[2][1], 0x08060402u);
+	EXPECT_EQ(out[2][0], 0x00000000u);
+	EXPECT_EQ(out[2][1], 0x08060402u);
 
-		EXPECT_EQ(out[3][0], 0x08080808u);
-		EXPECT_EQ(out[3][1], 0x08080808u);
+	EXPECT_EQ(out[3][0], 0x08080808u);
+	EXPECT_EQ(out[3][1], 0x08080808u);
 
-		EXPECT_EQ(out[4][0], 0x7F7F7F7Fu);
-		EXPECT_EQ(out[4][1], 0x7E7F7F7Fu);
+	EXPECT_EQ(out[4][0], 0x7F7F7F7Fu);
+	EXPECT_EQ(out[4][1], 0x7E7F7F7Fu);
 
-		EXPECT_EQ(out[5][0], 0x80808080u);
-		EXPECT_EQ(out[5][1], 0x88868482u);
+	EXPECT_EQ(out[5][0], 0x80808080u);
+	EXPECT_EQ(out[5][1], 0x88868482u);
 
-		EXPECT_EQ(out[6][0], 0x80808080u);
-		EXPECT_EQ(out[6][1], 0x88868482u);
+	EXPECT_EQ(out[6][0], 0x80808080u);
+	EXPECT_EQ(out[6][1], 0x88868482u);
 
-		EXPECT_EQ(out[7][0], 0x00040004u);
-		EXPECT_EQ(out[7][1], 0x00040004u);
+	EXPECT_EQ(out[7][0], 0x00040004u);
+	EXPECT_EQ(out[7][1], 0x00040004u);
 
-		EXPECT_EQ(out[8][0], 0x7FFF7FFFu);
-		EXPECT_EQ(out[8][1], 0x7FFE7FFFu);
+	EXPECT_EQ(out[8][0], 0x7FFF7FFFu);
+	EXPECT_EQ(out[8][1], 0x7FFE7FFFu);
 
-		EXPECT_EQ(out[9][0], 0x80008000u);
-		EXPECT_EQ(out[9][1], 0x80048002u);
+	EXPECT_EQ(out[9][0], 0x80008000u);
+	EXPECT_EQ(out[9][1], 0x80048002u);
 
-		EXPECT_EQ(out[10][0], 0x80008000u);
-		EXPECT_EQ(out[10][1], 0x80048002u);
+	EXPECT_EQ(out[10][0], 0x80008000u);
+	EXPECT_EQ(out[10][1], 0x80048002u);
 
-		EXPECT_EQ(out[11][0], 0x00040004u);
-		EXPECT_EQ(out[11][1], 0x00040004u);
+	EXPECT_EQ(out[11][0], 0x00040004u);
+	EXPECT_EQ(out[11][1], 0x00040004u);
 
-		EXPECT_EQ(out[12][0], 0xFFFFFFFFu);
-		EXPECT_EQ(out[12][1], 0xFFFEFFFFu);
+	EXPECT_EQ(out[12][0], 0xFFFFFFFFu);
+	EXPECT_EQ(out[12][1], 0xFFFEFFFFu);
 
-		EXPECT_EQ(out[13][0], 0x00000000u);
-		EXPECT_EQ(out[13][1], 0x00040002u);
-	}
+	EXPECT_EQ(out[13][0], 0x00000000u);
+	EXPECT_EQ(out[13][1], 0x00040002u);
 }
 
 TEST(ReactorUnitTests, Unpack)
@@ -1011,24 +1226,21 @@ TEST(ReactorUnitTests, Unpack)
 
 	auto routine = function("one");
 
-	if(routine)
-	{
-		unsigned int in[1][2];
-		unsigned int out[2][2];
+	unsigned int in[1][2];
+	unsigned int out[2][2];
 
-		memset(&out, 0, sizeof(out));
+	memset(&out, 0, sizeof(out));
 
-		in[0][0] = 0xABCDEF12u;
-		in[0][1] = 0x34567890u;
+	in[0][0] = 0xABCDEF12u;
+	in[0][1] = 0x34567890u;
 
-		routine(&in, &out);
+	routine(&in, &out);
 
-		EXPECT_EQ(out[0][0], 0x78EF9012u);
-		EXPECT_EQ(out[0][1], 0x34AB56CDu);
+	EXPECT_EQ(out[0][0], 0x78EF9012u);
+	EXPECT_EQ(out[0][1], 0x34AB56CDu);
 
-		EXPECT_EQ(out[1][0], 0xEFEF1212u);
-		EXPECT_EQ(out[1][1], 0xABABCDCDu);
-	}
+	EXPECT_EQ(out[1][0], 0xEFEF1212u);
+	EXPECT_EQ(out[1][1], 0xABABCDCDu);
 }
 
 TEST(ReactorUnitTests, Pack)
@@ -1058,32 +1270,29 @@ TEST(ReactorUnitTests, Pack)
 
 	auto routine = function("one");
 
-	if(routine)
-	{
-		unsigned int out[6][2];
+	unsigned int out[6][2];
 
-		memset(&out, 0, sizeof(out));
+	memset(&out, 0, sizeof(out));
 
-		routine(&out);
+	routine(&out);
 
-		EXPECT_EQ(out[0][0], 0x0201FEFFu);
-		EXPECT_EQ(out[0][1], 0xFCFD0403u);
+	EXPECT_EQ(out[0][0], 0x0201FEFFu);
+	EXPECT_EQ(out[0][1], 0xFCFD0403u);
 
-		EXPECT_EQ(out[1][0], 0x02010000u);
-		EXPECT_EQ(out[1][1], 0x00000403u);
+	EXPECT_EQ(out[1][0], 0x02010000u);
+	EXPECT_EQ(out[1][1], 0x00000403u);
 
-		EXPECT_EQ(out[2][0], 0xFFFEFFFFu);
-		EXPECT_EQ(out[2][1], 0x00020001u);
+	EXPECT_EQ(out[2][0], 0xFFFEFFFFu);
+	EXPECT_EQ(out[2][1], 0x00020001u);
 
-		EXPECT_EQ(out[3][0], 0x00040003u);
-		EXPECT_EQ(out[3][1], 0xFFFCFFFDu);
+	EXPECT_EQ(out[3][0], 0x00040003u);
+	EXPECT_EQ(out[3][1], 0xFFFCFFFDu);
 
-		EXPECT_EQ(out[4][0], 0x00000000u);
-		EXPECT_EQ(out[4][1], 0x00020001u);
+	EXPECT_EQ(out[4][0], 0x00000000u);
+	EXPECT_EQ(out[4][1], 0x00020001u);
 
-		EXPECT_EQ(out[5][0], 0x00040003u);
-		EXPECT_EQ(out[5][1], 0x00000000u);
-	}
+	EXPECT_EQ(out[5][0], 0x00040003u);
+	EXPECT_EQ(out[5][1], 0x00000000u);
 }
 
 TEST(ReactorUnitTests, MulHigh)
@@ -1120,40 +1329,37 @@ TEST(ReactorUnitTests, MulHigh)
 
 	auto routine = function("one");
 
-	if(routine)
-	{
-		unsigned int out[6][4];
+	unsigned int out[6][4];
 
-		memset(&out, 0, sizeof(out));
+	memset(&out, 0, sizeof(out));
 
-		routine(&out);
+	routine(&out);
 
-		EXPECT_EQ(out[0][0], 0x00080002u);
-		EXPECT_EQ(out[0][1], 0x008D000Fu);
+	EXPECT_EQ(out[0][0], 0x00080002u);
+	EXPECT_EQ(out[0][1], 0x008D000Fu);
 
-		EXPECT_EQ(out[1][0], 0x00080002u);
-		EXPECT_EQ(out[1][1], 0xE8C0000Fu);
+	EXPECT_EQ(out[1][0], 0x00080002u);
+	EXPECT_EQ(out[1][1], 0xE8C0000Fu);
 
-		EXPECT_EQ(out[2][0], 0x00000000u);
-		EXPECT_EQ(out[2][1], 0xFFFFFE9Cu);
-		EXPECT_EQ(out[2][2], 0xFFFFFF23u);
-		EXPECT_EQ(out[2][3], 0x01480000u);
+	EXPECT_EQ(out[2][0], 0x00000000u);
+	EXPECT_EQ(out[2][1], 0xFFFFFE9Cu);
+	EXPECT_EQ(out[2][2], 0xFFFFFF23u);
+	EXPECT_EQ(out[2][3], 0x01480000u);
 
-		EXPECT_EQ(out[3][0], 0x00000000u);
-		EXPECT_EQ(out[3][1], 0x00000179u);
-		EXPECT_EQ(out[3][2], 0x00000311u);
-		EXPECT_EQ(out[3][3], 0xB5680000u);
+	EXPECT_EQ(out[3][0], 0x00000000u);
+	EXPECT_EQ(out[3][1], 0x00000179u);
+	EXPECT_EQ(out[3][2], 0x00000311u);
+	EXPECT_EQ(out[3][3], 0xB5680000u);
 
-		EXPECT_EQ(out[4][0], 0x3FFFFFFFu);
-		EXPECT_EQ(out[4][1], 0xC0000000u);
-		EXPECT_EQ(out[4][2], 0x3FFF8000u);
-		EXPECT_EQ(out[4][3], 0x00000000u);
+	EXPECT_EQ(out[4][0], 0x3FFFFFFFu);
+	EXPECT_EQ(out[4][1], 0xC0000000u);
+	EXPECT_EQ(out[4][2], 0x3FFF8000u);
+	EXPECT_EQ(out[4][3], 0x00000000u);
 
-		EXPECT_EQ(out[5][0], 0x3FFFFFFFu);
-		EXPECT_EQ(out[5][1], 0x3FFFFFFFu);
-		EXPECT_EQ(out[5][2], 0x40008000u);
-		EXPECT_EQ(out[5][3], 0xFFFFFFFEu);
-	}
+	EXPECT_EQ(out[5][0], 0x3FFFFFFFu);
+	EXPECT_EQ(out[5][1], 0x3FFFFFFFu);
+	EXPECT_EQ(out[5][2], 0x40008000u);
+	EXPECT_EQ(out[5][3], 0xFFFFFFFEu);
 }
 
 TEST(ReactorUnitTests, MulAdd)
@@ -1172,17 +1378,14 @@ TEST(ReactorUnitTests, MulAdd)
 
 	auto routine = function("one");
 
-	if(routine)
-	{
-		unsigned int out[1][2];
+	unsigned int out[1][2];
 
-		memset(&out, 0, sizeof(out));
+	memset(&out, 0, sizeof(out));
 
-		routine(&out);
+	routine(&out);
 
-		EXPECT_EQ(out[0][0], 0x000AE34Au);
-		EXPECT_EQ(out[0][1], 0x009D5254u);
-	}
+	EXPECT_EQ(out[0][0], 0x000AE34Au);
+	EXPECT_EQ(out[0][1], 0x009D5254u);
 }
 
 TEST(ReactorUnitTests, PointersEqual)
@@ -1435,11 +1638,8 @@ TEST(ReactorUnitTests, Call_Args4)
 
 		auto routine = function("one");
 
-		if(routine)
-		{
-			int res = routine();
-			EXPECT_EQ(res, 1 + 2 + 3 + 4);
-		}
+		int res = routine();
+		EXPECT_EQ(res, 1 + 2 + 3 + 4);
 	}
 }
 
@@ -1462,11 +1662,8 @@ TEST(ReactorUnitTests, Call_Args5)
 
 		auto routine = function("one");
 
-		if(routine)
-		{
-			int res = routine();
-			EXPECT_EQ(res, 1 + 2 + 3 + 4 + 5);
-		}
+		int res = routine();
+		EXPECT_EQ(res, 1 + 2 + 3 + 4 + 5);
 	}
 }
 
@@ -1489,11 +1686,8 @@ TEST(ReactorUnitTests, Call_ArgsMany)
 
 		auto routine = function("one");
 
-		if(routine)
-		{
-			int res = routine();
-			EXPECT_EQ(res, 1 + 2 + 3 + 4 + 5 + 6 + 7 + 8);
-		}
+		int res = routine();
+		EXPECT_EQ(res, 1 + 2 + 3 + 4 + 5 + 6 + 7 + 8);
 	}
 }
 
@@ -1520,11 +1714,8 @@ TEST(ReactorUnitTests, Call_ArgsMixed)
 
 		auto routine = function("one");
 
-		if(routine)
-		{
-			int res = routine();
-			EXPECT_EQ(res, 1 + 2 + 3 + 4 + 5 + 6 + 7 + 8);
-		}
+		int res = routine();
+		EXPECT_EQ(res, 1 + 2 + 3 + 4 + 5 + 6 + 7 + 8);
 	}
 }
 
@@ -1548,11 +1739,8 @@ TEST(ReactorUnitTests, Call_ArgsPointer)
 
 		auto routine = function("one");
 
-		if(routine)
-		{
-			int res = routine();
-			EXPECT_EQ(res, 12345);
-		}
+		int res = routine();
+		EXPECT_EQ(res, 12345);
 	}
 }
 
@@ -1715,12 +1903,9 @@ TYPED_TEST(CToReactorTCastTest, Casts)
 
 		routine = function("one");
 
-		if(routine)
-		{
-			auto callable = (int (*)(CType))routine->getEntry();
-			CType in = {};
-			EXPECT_EQ(callable(in), 1);
-		}
+		auto callable = (int (*)(CType))routine->getEntry();
+		CType in = {};
+		EXPECT_EQ(callable(in), 1);
 	}
 }
 
@@ -1781,32 +1966,29 @@ TYPED_TEST(GEPTest, PtrOffsets)
 
 		routine = function("one");
 
-		if(routine)
+		auto callable = (CType * (*)(CType *, unsigned int)) routine->getEntry();
+
+		union PtrInt
 		{
-			auto callable = (CType * (*)(CType *, unsigned int)) routine->getEntry();
+			CType *p;
+			size_t i;
+		};
 
-			union PtrInt
-			{
-				CType *p;
-				size_t i;
-			};
+		PtrInt base;
+		base.i = 0x10000;
 
-			PtrInt base;
-			base.i = 0x10000;
+		for(int i = 0; i < 5; i++)
+		{
+			PtrInt reference;
+			reference.p = &base.p[i];
 
-			for(int i = 0; i < 5; i++)
-			{
-				PtrInt reference;
-				reference.p = &base.p[i];
+			PtrInt result;
+			result.p = callable(base.p, i);
 
-				PtrInt result;
-				result.p = callable(base.p, i);
+			auto expect = reference.i - base.i;
+			auto got = result.i - base.i;
 
-				auto expect = reference.i - base.i;
-				auto got = result.i - base.i;
-
-				EXPECT_EQ(got, expect) << "i:" << i;
-			}
+			EXPECT_EQ(got, expect) << "i:" << i;
 		}
 	}
 }
@@ -1916,6 +2098,150 @@ TEST(ReactorUnitTests, Coroutines_Parameters)
 	EXPECT_EQ(out, 99);
 }
 
+// This test was written because Subzero's handling of vector types
+// failed when more than one function is generated, as is the case
+// with coroutines.
+TEST(ReactorUnitTests, Coroutines_Vectors)
+{
+	if(!rr::Caps.CoroutinesSupported)
+	{
+		SUCCEED() << "Coroutines not supported";
+		return;
+	}
+
+	Coroutine<int()> function;
+	{
+		Int4 a{ 1, 2, 3, 4 };
+		Yield(rr::Extract(a, 2));
+		Int4 b{ 5, 6, 7, 8 };
+		Yield(rr::Extract(b, 1));
+		Int4 c{ 9, 10, 11, 12 };
+		Yield(rr::Extract(c, 1));
+	}
+
+	auto coroutine = function();
+
+	int out;
+	coroutine->await(out);
+	EXPECT_EQ(out, 3);
+	coroutine->await(out);
+	EXPECT_EQ(out, 6);
+	coroutine->await(out);
+	EXPECT_EQ(out, 10);
+}
+
+// This test was written to make sure a coroutine without a Yield()
+// works correctly, by executing like a regular function with no
+// return (the return type is ignored).
+// We also run it twice to ensure per instance and/or global state
+// is properly cleaned up in between.
+TEST(ReactorUnitTests, Coroutines_NoYield)
+{
+	if(!rr::Caps.CoroutinesSupported)
+	{
+		SUCCEED() << "Coroutines not supported";
+		return;
+	}
+
+	for(int i = 0; i < 2; ++i)
+	{
+		Coroutine<int()> function;
+		{
+			Int a;
+			a = 4;
+		}
+
+		auto coroutine = function();
+		int out;
+		EXPECT_EQ(coroutine->await(out), false);
+	}
+}
+
+// Test generating one coroutine, and executing it on multiple threads. This makes
+// sure the implementation manages per-call instance data correctly.
+TEST(ReactorUnitTests, Coroutines_Parallel)
+{
+	if(!rr::Caps.CoroutinesSupported)
+	{
+		SUCCEED() << "Coroutines not supported";
+		return;
+	}
+
+	Coroutine<int()> function;
+	{
+		Yield(Int(0));
+		Yield(Int(1));
+		Int current = 1;
+		Int next = 1;
+		While(true)
+		{
+			Yield(next);
+			auto tmp = current + next;
+			current = next;
+			next = tmp;
+		}
+	}
+
+	// Must call on same thread that creates the coroutine
+	function.finalize();
+
+	constexpr int32_t expected[] = {
+		0,
+		1,
+		1,
+		2,
+		3,
+		5,
+		8,
+		13,
+		21,
+		34,
+		55,
+		89,
+		144,
+		233,
+		377,
+		610,
+		987,
+		1597,
+		2584,
+		4181,
+		6765,
+		10946,
+		17711,
+		28657,
+		46368,
+		75025,
+		121393,
+		196418,
+		317811,
+	};
+
+	constexpr auto count = sizeof(expected) / sizeof(expected[0]);
+
+	std::vector<std::thread> threads;
+	const size_t numThreads = 100;
+
+	for(size_t t = 0; t < numThreads; ++t)
+	{
+		threads.emplace_back([&] {
+			auto coroutine = function();
+
+			for(size_t i = 0; i < count; i++)
+			{
+				int out = 0;
+				EXPECT_EQ(coroutine->await(out), true);
+				EXPECT_EQ(out, expected[i]);
+			}
+		});
+	}
+
+	for(auto &t : threads)
+	{
+		t.join();
+	}
+}
+
 template<typename TestFuncType, typename RefFuncType, typename TestValueType>
 struct IntrinsicTestParams
 {
@@ -2000,11 +2326,52 @@ struct IntrinsicTest_Float4_Float4 : public testing::TestWithParam<IntrinsicTest
 	}
 };
 
-INSTANTIATE_TEST_SUITE_P(IntrinsicTestParams_Float, IntrinsicTest_Float, testing::Values(IntrinsicTestParams_Float{ [](Float v) { return rr::Exp2(v); }, exp2f, { 0.f, 1.f, 12345.f } }, IntrinsicTestParams_Float{ [](Float v) { return rr::Log2(v); }, log2f, { 0.f, 1.f, 12345.f } }, IntrinsicTestParams_Float{ [](Float v) { return rr::Sqrt(v); }, sqrtf, { 0.f, 1.f, 12345.f } }));
+// clang-format off
+INSTANTIATE_TEST_SUITE_P(IntrinsicTestParams_Float, IntrinsicTest_Float, testing::Values(
+	IntrinsicTestParams_Float{ [](Float v) { return rr::Exp2(v); }, exp2f, {0.f, 1.f, 12345.f} },
+	IntrinsicTestParams_Float{ [](Float v) { return rr::Log2(v); }, log2f, {0.f, 1.f, 12345.f} },
+	IntrinsicTestParams_Float{ [](Float v) { return rr::Sqrt(v); }, sqrtf, {0.f, 1.f, 12345.f} }
+));
+// clang-format on
 
-INSTANTIATE_TEST_SUITE_P(IntrinsicTestParams_Float4, IntrinsicTest_Float4, testing::Values(IntrinsicTestParams_Float4{ [](RValue<Float4> v) { return rr::Sin(v); }, sinf, { 0.f, 1.f, PI, 12345.f } }, IntrinsicTestParams_Float4{ [](RValue<Float4> v) { return rr::Cos(v); }, cosf, { 0.f, 1.f, PI, 12345.f } }, IntrinsicTestParams_Float4{ [](RValue<Float4> v) { return rr::Tan(v); }, tanf, { 0.f, 1.f, PI, 12345.f } }, IntrinsicTestParams_Float4{ [](RValue<Float4> v) { return rr::Asin(v); }, asinf, { 0.f, 1.f, -1.f } }, IntrinsicTestParams_Float4{ [](RValue<Float4> v) { return rr::Acos(v); }, acosf, { 0.f, 1.f, -1.f } }, IntrinsicTestParams_Float4{ [](RValue<Float4> v) { return rr::Atan(v); }, atanf, { 0.f, 1.f, PI, 12345.f } }, IntrinsicTestParams_Float4{ [](RValue<Float4> v) { return rr::Sinh(v); }, sinhf, { 0.f, 1.f, PI, 12345.f } }, IntrinsicTestParams_Float4{ [](RValue<Float4> v) { return rr::Cosh(v); }, coshf, { 0.f, 1.f, PI, 12345.f } }, IntrinsicTestParams_Float4{ [](RValue<Float4> v) { return rr::Tanh(v); }, tanhf, { 0.f, 1.f, PI, 12345.f } }, IntrinsicTestParams_Float4{ [](RValue<Float4> v) { return rr::Asinh(v); }, asinhf, { 0.f, 1.f, PI, 12345.f } }, IntrinsicTestParams_Float4{ [](RValue<Float4> v) { return rr::Acosh(v); }, acoshf, { 1.f, PI, 12345.f } }, IntrinsicTestParams_Float4{ [](RValue<Float4> v) { return rr::Atanh(v); }, atanhf, { 0.f, 1.f, -1.f } }, IntrinsicTestParams_Float4{ [](RValue<Float4> v) { return rr::Exp(v); }, expf, { 0.f, 1.f, PI, 12345.f } }, IntrinsicTestParams_Float4{ [](RValue<Float4> v) { return rr::Log(v); }, logf, { 0.f, 1.f, PI, 12345.f } }, IntrinsicTestParams_Float4{ [](RValue<Float4> v) { return rr::Exp2(v); }, exp2f, { 0.f, 1.f, PI, 12345.f } }, IntrinsicTestParams_Float4{ [](RValue<Float4> v) { return rr::Log2(v); }, log2f, { 0.f, 1.f, PI, 12345.f } }, IntrinsicTestParams_Float4{ [](RValue<Float4> v) { return rr::Sqrt(v); }, sqrtf, { 0.f, 1.f, PI, 12345.f } }));
+// TODO(b/149110874) Use coshf/sinhf when we've implemented SpirV versions at the SpirV level
+float vulkan_sinhf(float a)
+{
+	return ((expf(a) - expf(-a)) / 2);
+}
+float vulkan_coshf(float a)
+{
+	return ((expf(a) + expf(-a)) / 2);
+}
 
-INSTANTIATE_TEST_SUITE_P(IntrinsicTestParams_Float4_Float4, IntrinsicTest_Float4_Float4, testing::Values(IntrinsicTestParams_Float4_Float4{ [](RValue<Float4> v1, RValue<Float4> v2) { return Atan2(v1, v2); }, atan2f, { { 0.f, 0.f }, { 0.f, -1.f }, { -1.f, 0.f }, { 12345.f, 12345.f } } }, IntrinsicTestParams_Float4_Float4{ [](RValue<Float4> v1, RValue<Float4> v2) { return Pow(v1, v2); }, powf, { { 0.f, 0.f }, { 0.f, -1.f }, { -1.f, 0.f }, { 12345.f, 12345.f } } }));
+// clang-format off
+INSTANTIATE_TEST_SUITE_P(IntrinsicTestParams_Float4, IntrinsicTest_Float4, testing::Values(
+	IntrinsicTestParams_Float4{ [](RValue<Float4> v) { return rr::Sin(v); },   sinf,   {0.f, 1.f, PI, 12345.f}  },
+	IntrinsicTestParams_Float4{ [](RValue<Float4> v) { return rr::Cos(v); },   cosf,   {0.f, 1.f, PI, 12345.f}  },
+	IntrinsicTestParams_Float4{ [](RValue<Float4> v) { return rr::Tan(v); },   tanf,   {0.f, 1.f, PI, 12345.f}  },
+	IntrinsicTestParams_Float4{ [](RValue<Float4> v) { return rr::Asin(v); },  asinf,  {0.f, 1.f, -1.f}  },
+	IntrinsicTestParams_Float4{ [](RValue<Float4> v) { return rr::Acos(v); },  acosf,  {0.f, 1.f, -1.f}  },
+	IntrinsicTestParams_Float4{ [](RValue<Float4> v) { return rr::Atan(v); },  atanf,  {0.f, 1.f, PI, 12345.f}  },
+	IntrinsicTestParams_Float4{ [](RValue<Float4> v) { return rr::Sinh(v); },  vulkan_sinhf,  {0.f, 1.f, PI, 12345.f, 0x1.65a84ep6}  },
+	IntrinsicTestParams_Float4{ [](RValue<Float4> v) { return rr::Cosh(v); },  vulkan_coshf,  {0.f, 1.f, PI, 12345.f, 0x1.65a84ep6} },
+	IntrinsicTestParams_Float4{ [](RValue<Float4> v) { return rr::Tanh(v); },  tanhf,  {0.f, 1.f, PI, 12345.f}  },
+	IntrinsicTestParams_Float4{ [](RValue<Float4> v) { return rr::Asinh(v); }, asinhf, {0.f, 1.f, PI, 12345.f}  },
+	IntrinsicTestParams_Float4{ [](RValue<Float4> v) { return rr::Acosh(v); }, acoshf, {     1.f, PI, 12345.f}  },
+	IntrinsicTestParams_Float4{ [](RValue<Float4> v) { return rr::Atanh(v); }, atanhf, {0.f, 1.f, -1.f}  },
+	IntrinsicTestParams_Float4{ [](RValue<Float4> v) { return rr::Exp(v); },   expf,   {0.f, 1.f, PI, 12345.f}  },
+	IntrinsicTestParams_Float4{ [](RValue<Float4> v) { return rr::Log(v); },   logf,   {0.f, 1.f, PI, 12345.f}  },
+	IntrinsicTestParams_Float4{ [](RValue<Float4> v) { return rr::Exp2(v); },  exp2f,  {0.f, 1.f, PI, 12345.f}  },
+	IntrinsicTestParams_Float4{ [](RValue<Float4> v) { return rr::Log2(v); },  log2f,  {0.f, 1.f, PI, 12345.f}  },
+	IntrinsicTestParams_Float4{ [](RValue<Float4> v) { return rr::Sqrt(v); },  sqrtf,  {0.f, 1.f, PI, 12345.f}  }
+));
+// clang-format on
+
+// clang-format off
+INSTANTIATE_TEST_SUITE_P(IntrinsicTestParams_Float4_Float4, IntrinsicTest_Float4_Float4, testing::Values(
+	IntrinsicTestParams_Float4_Float4{ [](RValue<Float4> v1, RValue<Float4> v2) { return Atan2(v1, v2); }, atan2f, { {0.f, 0.f}, {0.f, -1.f}, {-1.f, 0.f}, {12345.f, 12345.f} } },
+	IntrinsicTestParams_Float4_Float4{ [](RValue<Float4> v1, RValue<Float4> v2) { return Pow(v1, v2); },   powf,   { {0.f, 0.f}, {0.f, -1.f}, {-1.f, 0.f}, {12345.f, 12345.f} } }
+));
+// clang-format on
 
 TEST_P(IntrinsicTest_Float, Test)
 {

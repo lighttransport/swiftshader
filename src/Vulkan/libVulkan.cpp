@@ -17,7 +17,6 @@
 #include "VkCommandBuffer.hpp"
 #include "VkCommandPool.hpp"
 #include "VkConfig.h"
-#include "VkDebug.hpp"
 #include "VkDescriptorPool.hpp"
 #include "VkDescriptorSetLayout.hpp"
 #include "VkDescriptorUpdateTemplate.hpp"
@@ -42,6 +41,8 @@
 #include "VkSemaphore.hpp"
 #include "VkShaderModule.hpp"
 #include "VkStringify.hpp"
+
+#include "System/Debug.hpp"
 
 #if defined(VK_USE_PLATFORM_METAL_EXT) || defined(VK_USE_PLATFORM_MACOS_MVK)
 #	include "WSI/MetalSurface.h"
@@ -164,6 +165,92 @@ void initializeLibrary()
 	(void)doOnce;
 }
 
+template<class T>
+void ValidateRenderPassPNextChain(VkDevice device, const T *pCreateInfo)
+{
+	const VkBaseInStructure *extensionCreateInfo = reinterpret_cast<const VkBaseInStructure *>(pCreateInfo->pNext);
+
+	while(extensionCreateInfo)
+	{
+		switch(extensionCreateInfo->sType)
+		{
+			case VK_STRUCTURE_TYPE_RENDER_PASS_INPUT_ATTACHMENT_ASPECT_CREATE_INFO:
+			{
+				const VkRenderPassInputAttachmentAspectCreateInfo *inputAttachmentAspectCreateInfo = reinterpret_cast<const VkRenderPassInputAttachmentAspectCreateInfo *>(extensionCreateInfo);
+
+				for(uint32_t i = 0; i < inputAttachmentAspectCreateInfo->aspectReferenceCount; i++)
+				{
+					const auto &aspectReference = inputAttachmentAspectCreateInfo->pAspectReferences[i];
+					ASSERT(aspectReference.subpass < pCreateInfo->subpassCount);
+					const auto &subpassDescription = pCreateInfo->pSubpasses[aspectReference.subpass];
+					ASSERT(aspectReference.inputAttachmentIndex < subpassDescription.inputAttachmentCount);
+					const auto &attachmentReference = subpassDescription.pInputAttachments[aspectReference.inputAttachmentIndex];
+					if(attachmentReference.attachment != VK_ATTACHMENT_UNUSED)
+					{
+						// If the pNext chain includes an instance of VkRenderPassInputAttachmentAspectCreateInfo, for any
+						// element of the pInputAttachments member of any element of pSubpasses where the attachment member
+						// is not VK_ATTACHMENT_UNUSED, the aspectMask member of the corresponding element of
+						// VkRenderPassInputAttachmentAspectCreateInfo::pAspectReferences must only include aspects that are
+						// present in images of the format specified by the element of pAttachments at attachment
+						vk::Format format(pCreateInfo->pAttachments[attachmentReference.attachment].format);
+						bool isDepth = format.isDepth();
+						bool isStencil = format.isStencil();
+						ASSERT(!(aspectReference.aspectMask & VK_IMAGE_ASPECT_COLOR_BIT) || (!isDepth && !isStencil));
+						ASSERT(!(aspectReference.aspectMask & VK_IMAGE_ASPECT_DEPTH_BIT) || isDepth);
+						ASSERT(!(aspectReference.aspectMask & VK_IMAGE_ASPECT_STENCIL_BIT) || isStencil);
+					}
+				}
+			}
+			break;
+			case VK_STRUCTURE_TYPE_RENDER_PASS_MULTIVIEW_CREATE_INFO:
+			{
+				const VkRenderPassMultiviewCreateInfo *multiviewCreateInfo = reinterpret_cast<const VkRenderPassMultiviewCreateInfo *>(extensionCreateInfo);
+				ASSERT((multiviewCreateInfo->subpassCount == 0) || (multiviewCreateInfo->subpassCount == pCreateInfo->subpassCount));
+				ASSERT((multiviewCreateInfo->dependencyCount == 0) || (multiviewCreateInfo->dependencyCount == pCreateInfo->dependencyCount));
+
+				bool zeroMask = (multiviewCreateInfo->pViewMasks[0] == 0);
+				for(uint32_t i = 1; i < multiviewCreateInfo->subpassCount; i++)
+				{
+					ASSERT((multiviewCreateInfo->pViewMasks[i] == 0) == zeroMask);
+				}
+
+				if(zeroMask)
+				{
+					ASSERT(multiviewCreateInfo->correlationMaskCount == 0);
+				}
+
+				for(uint32_t i = 0; i < multiviewCreateInfo->dependencyCount; i++)
+				{
+					const auto &dependency = pCreateInfo->pDependencies[i];
+					if(multiviewCreateInfo->pViewOffsets[i] != 0)
+					{
+						ASSERT(dependency.srcSubpass != dependency.dstSubpass);
+						ASSERT(dependency.dependencyFlags & VK_DEPENDENCY_VIEW_LOCAL_BIT);
+					}
+					if(zeroMask)
+					{
+						ASSERT(!(dependency.dependencyFlags & VK_DEPENDENCY_VIEW_LOCAL_BIT));
+					}
+				}
+
+				// If the pNext chain includes an instance of VkRenderPassMultiviewCreateInfo,
+				// each element of its pViewMask member must not include a bit at a position
+				// greater than the value of VkPhysicalDeviceLimits::maxFramebufferLayers
+				// pViewMask is a 32 bit value. If maxFramebufferLayers > 32, it's impossible
+				// for pViewMask to contain a bit at an illegal position
+				// Note: Verify pViewMask values instead if we hit this assert
+				ASSERT(vk::Cast(device)->getPhysicalDevice()->getProperties().limits.maxFramebufferLayers >= 32);
+			}
+			break;
+			default:
+				WARN("pCreateInfo->pNext sType = %s", vk::Stringify(extensionCreateInfo->sType).c_str());
+				break;
+		}
+
+		extensionCreateInfo = extensionCreateInfo->pNext;
+	}
+}
+
 }  // namespace
 
 extern "C" {
@@ -211,6 +298,7 @@ static const VkExtensionProperties deviceExtensionProperties[] = {
 	// Vulkan 1.1 promoted extensions
 	{ VK_KHR_16BIT_STORAGE_EXTENSION_NAME, VK_KHR_16BIT_STORAGE_SPEC_VERSION },
 	{ VK_KHR_BIND_MEMORY_2_EXTENSION_NAME, VK_KHR_BIND_MEMORY_2_SPEC_VERSION },
+	{ VK_KHR_CREATE_RENDERPASS_2_EXTENSION_NAME, VK_KHR_CREATE_RENDERPASS_2_SPEC_VERSION },
 	{ VK_KHR_DEDICATED_ALLOCATION_EXTENSION_NAME, VK_KHR_DEDICATED_ALLOCATION_SPEC_VERSION },
 	{ VK_KHR_DESCRIPTOR_UPDATE_TEMPLATE_EXTENSION_NAME, VK_KHR_DESCRIPTOR_UPDATE_TEMPLATE_SPEC_VERSION },
 	{ VK_KHR_DEVICE_GROUP_EXTENSION_NAME, VK_KHR_DEVICE_GROUP_SPEC_VERSION },
@@ -224,6 +312,7 @@ static const VkExtensionProperties deviceExtensionProperties[] = {
 	{ VK_KHR_MULTIVIEW_EXTENSION_NAME, VK_KHR_MULTIVIEW_SPEC_VERSION },
 	{ VK_KHR_RELAXED_BLOCK_LAYOUT_EXTENSION_NAME, VK_KHR_RELAXED_BLOCK_LAYOUT_SPEC_VERSION },
 	{ VK_KHR_SAMPLER_YCBCR_CONVERSION_EXTENSION_NAME, VK_KHR_SAMPLER_YCBCR_CONVERSION_SPEC_VERSION },
+	{ VK_KHR_SEPARATE_DEPTH_STENCIL_LAYOUTS_EXTENSION_NAME, VK_KHR_SEPARATE_DEPTH_STENCIL_LAYOUTS_SPEC_VERSION },
 	// Only 1.1 core version of this is supported. The extension has additional requirements
 	//{ VK_KHR_SHADER_DRAW_PARAMETERS_EXTENSION_NAME, VK_KHR_SHADER_DRAW_PARAMETERS_SPEC_VERSION },
 	{ VK_KHR_STORAGE_BUFFER_STORAGE_CLASS_EXTENSION_NAME, VK_KHR_STORAGE_BUFFER_STORAGE_CLASS_SPEC_VERSION },
@@ -252,6 +341,9 @@ static const VkExtensionProperties deviceExtensionProperties[] = {
 #if SWIFTSHADER_EXTERNAL_MEMORY_OPAQUE_FD
 	{ VK_KHR_EXTERNAL_MEMORY_FD_EXTENSION_NAME, VK_KHR_EXTERNAL_MEMORY_FD_SPEC_VERSION },
 #endif
+
+	{ VK_EXT_EXTERNAL_MEMORY_HOST_EXTENSION_NAME, VK_EXT_EXTERNAL_MEMORY_HOST_SPEC_VERSION },
+
 #if VK_USE_PLATFORM_FUCHSIA
 	{ VK_FUCHSIA_EXTERNAL_SEMAPHORE_EXTENSION_NAME, VK_FUCHSIA_EXTERNAL_SEMAPHORE_SPEC_VERSION },
 #endif
@@ -273,7 +365,7 @@ VKAPI_ATTR VkResult VKAPI_CALL vkCreateInstance(const VkInstanceCreateInfo *pCre
 
 	if(pCreateInfo->enabledLayerCount != 0)
 	{
-		UNIMPLEMENTED("pCreateInfo->enabledLayerCount != 0");
+		UNIMPLEMENTED("b/148240133: pCreateInfo->enabledLayerCount != 0");  // FIXME(b/148240133)
 	}
 
 	uint32_t extensionPropertiesCount = sizeof(instanceExtensionProperties) / sizeof(instanceExtensionProperties[0]);
@@ -625,6 +717,14 @@ VKAPI_ATTR VkResult VKAPI_CALL vkCreateDevice(VkPhysicalDevice physicalDevice, c
 				}
 			}
 			break;
+			case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SEPARATE_DEPTH_STENCIL_LAYOUTS_FEATURES_KHR:
+			{
+				const VkPhysicalDeviceSeparateDepthStencilLayoutsFeaturesKHR *shaderDrawParametersFeatures = reinterpret_cast<const VkPhysicalDeviceSeparateDepthStencilLayoutsFeaturesKHR *>(extensionCreateInfo);
+
+				// Separate depth and stencil layouts is already supported
+				(void)(shaderDrawParametersFeatures->separateDepthStencilLayouts);
+			}
+			break;
 			case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_LINE_RASTERIZATION_FEATURES_EXT:
 			{
 				const VkPhysicalDeviceLineRasterizationFeaturesEXT *lineRasterizationFeatures = reinterpret_cast<const VkPhysicalDeviceLineRasterizationFeaturesEXT *>(extensionCreateInfo);
@@ -855,6 +955,16 @@ VKAPI_ATTR VkResult VKAPI_CALL vkAllocateMemory(VkDevice device, const VkMemoryA
 				// Ignore
 				break;
 #endif  // SWIFTSHADER_EXTERNAL_MEMORY_ANDROID_HARDWARE_BUFFER
+			case VK_STRUCTURE_TYPE_IMPORT_MEMORY_HOST_POINTER_INFO_EXT:
+			{
+				auto *importInfo = reinterpret_cast<const VkImportMemoryHostPointerInfoEXT *>(allocationInfo);
+				if(importInfo->handleType != VK_EXTERNAL_MEMORY_HANDLE_TYPE_HOST_ALLOCATION_BIT_EXT && importInfo->handleType != VK_EXTERNAL_MEMORY_HANDLE_TYPE_HOST_MAPPED_FOREIGN_MEMORY_BIT_EXT)
+				{
+					UNSUPPORTED("importInfo->handleType %u", importInfo->handleType);
+					return VK_ERROR_INVALID_EXTERNAL_HANDLE;
+				}
+				break;
+			}
 			default:
 				WARN("pAllocateInfo->pNext sType = %s", vk::Stringify(allocationInfo->sType).c_str());
 				break;
@@ -927,6 +1037,21 @@ VKAPI_ATTR VkResult VKAPI_CALL vkGetMemoryFdPropertiesKHR(VkDevice device, VkExt
 	return VK_SUCCESS;
 }
 #endif  // SWIFTSHADER_EXTERNAL_MEMORY_OPAQUE_FD
+
+VKAPI_ATTR VkResult VKAPI_CALL vkGetMemoryHostPointerPropertiesEXT(VkDevice device, VkExternalMemoryHandleTypeFlagBits handleType, const void *pHostPointer, VkMemoryHostPointerPropertiesEXT *pMemoryHostPointerProperties)
+{
+	TRACE("(VkDevice device = %p, VkExternalMemoryHandleTypeFlagBits handleType = %x, const void *pHostPointer = %p, VkMemoryHostPointerPropertiesEXT *pMemoryHostPointerProperties = %p)",
+	      device, handleType, pHostPointer, pMemoryHostPointerProperties);
+
+	if(handleType != VK_EXTERNAL_MEMORY_HANDLE_TYPE_HOST_ALLOCATION_BIT_EXT && handleType != VK_EXTERNAL_MEMORY_HANDLE_TYPE_HOST_MAPPED_FOREIGN_MEMORY_BIT_EXT)
+	{
+		UNSUPPORTED("handleType %u", handleType);
+		return VK_ERROR_INVALID_EXTERNAL_HANDLE;
+	}
+	pMemoryHostPointerProperties->memoryTypeBits = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT;
+
+	return VK_SUCCESS;
+}
 
 #if SWIFTSHADER_EXTERNAL_MEMORY_ANDROID_HARDWARE_BUFFER
 VKAPI_ATTR VkResult VKAPI_CALL vkGetMemoryAndroidHardwareBufferANDROID(VkDevice device, const VkMemoryGetAndroidHardwareBufferInfoANDROID *pInfo, struct AHardwareBuffer **pBuffer)
@@ -1883,87 +2008,23 @@ VKAPI_ATTR VkResult VKAPI_CALL vkCreateRenderPass(VkDevice device, const VkRende
 		UNSUPPORTED("pCreateInfo->flags %d", int(pCreateInfo->flags));
 	}
 
-	const VkBaseInStructure *extensionCreateInfo = reinterpret_cast<const VkBaseInStructure *>(pCreateInfo->pNext);
+	ValidateRenderPassPNextChain(device, pCreateInfo);
 
-	while(extensionCreateInfo)
+	return vk::RenderPass::Create(pAllocator, pCreateInfo, pRenderPass);
+}
+
+VKAPI_ATTR VkResult VKAPI_CALL vkCreateRenderPass2KHR(VkDevice device, const VkRenderPassCreateInfo2KHR *pCreateInfo, const VkAllocationCallbacks *pAllocator, VkRenderPass *pRenderPass)
+{
+	TRACE("(VkDevice device = %p, const VkRenderPassCreateInfo* pCreateInfo = %p, const VkAllocationCallbacks* pAllocator = %p, VkRenderPass* pRenderPass = %p)",
+	      device, pCreateInfo, pAllocator, pRenderPass);
+
+	if(pCreateInfo->flags != 0)
 	{
-		switch(extensionCreateInfo->sType)
-		{
-			case VK_STRUCTURE_TYPE_RENDER_PASS_INPUT_ATTACHMENT_ASPECT_CREATE_INFO:
-			{
-				const VkRenderPassInputAttachmentAspectCreateInfo *inputAttachmentAspectCreateInfo = reinterpret_cast<const VkRenderPassInputAttachmentAspectCreateInfo *>(extensionCreateInfo);
-
-				for(uint32_t i = 0; i < inputAttachmentAspectCreateInfo->aspectReferenceCount; i++)
-				{
-					const VkInputAttachmentAspectReference &aspectReference = inputAttachmentAspectCreateInfo->pAspectReferences[i];
-					ASSERT(aspectReference.subpass < pCreateInfo->subpassCount);
-					const VkSubpassDescription &subpassDescription = pCreateInfo->pSubpasses[aspectReference.subpass];
-					ASSERT(aspectReference.inputAttachmentIndex < subpassDescription.inputAttachmentCount);
-					const VkAttachmentReference &attachmentReference = subpassDescription.pInputAttachments[aspectReference.inputAttachmentIndex];
-					if(attachmentReference.attachment != VK_ATTACHMENT_UNUSED)
-					{
-						// If the pNext chain includes an instance of VkRenderPassInputAttachmentAspectCreateInfo, for any
-						// element of the pInputAttachments member of any element of pSubpasses where the attachment member
-						// is not VK_ATTACHMENT_UNUSED, the aspectMask member of the corresponding element of
-						// VkRenderPassInputAttachmentAspectCreateInfo::pAspectReferences must only include aspects that are
-						// present in images of the format specified by the element of pAttachments at attachment
-						vk::Format format(pCreateInfo->pAttachments[attachmentReference.attachment].format);
-						bool isDepth = format.isDepth();
-						bool isStencil = format.isStencil();
-						ASSERT(!(aspectReference.aspectMask & VK_IMAGE_ASPECT_COLOR_BIT) || (!isDepth && !isStencil));
-						ASSERT(!(aspectReference.aspectMask & VK_IMAGE_ASPECT_DEPTH_BIT) || isDepth);
-						ASSERT(!(aspectReference.aspectMask & VK_IMAGE_ASPECT_STENCIL_BIT) || isStencil);
-					}
-				}
-			}
-			break;
-			case VK_STRUCTURE_TYPE_RENDER_PASS_MULTIVIEW_CREATE_INFO:
-			{
-				const VkRenderPassMultiviewCreateInfo *multiviewCreateInfo = reinterpret_cast<const VkRenderPassMultiviewCreateInfo *>(extensionCreateInfo);
-				ASSERT((multiviewCreateInfo->subpassCount == 0) || (multiviewCreateInfo->subpassCount == pCreateInfo->subpassCount));
-				ASSERT((multiviewCreateInfo->dependencyCount == 0) || (multiviewCreateInfo->dependencyCount == pCreateInfo->dependencyCount));
-
-				bool zeroMask = (multiviewCreateInfo->pViewMasks[0] == 0);
-				for(uint32_t i = 1; i < multiviewCreateInfo->subpassCount; i++)
-				{
-					ASSERT((multiviewCreateInfo->pViewMasks[i] == 0) == zeroMask);
-				}
-
-				if(zeroMask)
-				{
-					ASSERT(multiviewCreateInfo->correlationMaskCount == 0);
-				}
-
-				for(uint32_t i = 0; i < multiviewCreateInfo->dependencyCount; i++)
-				{
-					const VkSubpassDependency &dependency = pCreateInfo->pDependencies[i];
-					if(multiviewCreateInfo->pViewOffsets[i] != 0)
-					{
-						ASSERT(dependency.srcSubpass != dependency.dstSubpass);
-						ASSERT(dependency.dependencyFlags & VK_DEPENDENCY_VIEW_LOCAL_BIT);
-					}
-					if(zeroMask)
-					{
-						ASSERT(!(dependency.dependencyFlags & VK_DEPENDENCY_VIEW_LOCAL_BIT));
-					}
-				}
-
-				// If the pNext chain includes an instance of VkRenderPassMultiviewCreateInfo,
-				// each element of its pViewMask member must not include a bit at a position
-				// greater than the value of VkPhysicalDeviceLimits::maxFramebufferLayers
-				// pViewMask is a 32 bit value. If maxFramebufferLayers > 32, it's impossible
-				// for pViewMask to contain a bit at an illegal position
-				// Note: Verify pViewMask values instead if we hit this assert
-				ASSERT(vk::Cast(device)->getPhysicalDevice()->getProperties().limits.maxFramebufferLayers >= 32);
-			}
-			break;
-			default:
-				WARN("pCreateInfo->pNext sType = %s", vk::Stringify(extensionCreateInfo->sType).c_str());
-				break;
-		}
-
-		extensionCreateInfo = extensionCreateInfo->pNext;
+		// Vulkan 1.2: "flags is reserved for future use." "flags must be 0"
+		UNSUPPORTED("pCreateInfo->flags %d", int(pCreateInfo->flags));
 	}
+
+	ValidateRenderPassPNextChain(device, pCreateInfo);
 
 	return vk::RenderPass::Create(pAllocator, pCreateInfo, pRenderPass);
 }
@@ -2414,6 +2475,14 @@ VKAPI_ATTR void VKAPI_CALL vkCmdBeginRenderPass(VkCommandBuffer commandBuffer, c
 	vk::Cast(commandBuffer)->beginRenderPass(vk::Cast(pRenderPassBegin->renderPass), vk::Cast(pRenderPassBegin->framebuffer), pRenderPassBegin->renderArea, pRenderPassBegin->clearValueCount, pRenderPassBegin->pClearValues, contents);
 }
 
+VKAPI_ATTR void VKAPI_CALL vkCmdBeginRenderPass2KHR(VkCommandBuffer commandBuffer, const VkRenderPassBeginInfo *pRenderPassBegin, const VkSubpassBeginInfoKHR *pSubpassBeginInfo)
+{
+	TRACE("(VkCommandBuffer commandBuffer = %p, const VkRenderPassBeginInfo* pRenderPassBegin = %p, const VkSubpassBeginInfoKHR* pSubpassBeginInfo = %p)",
+	      commandBuffer, pRenderPassBegin, pSubpassBeginInfo);
+
+	vk::Cast(commandBuffer)->beginRenderPass(vk::Cast(pRenderPassBegin->renderPass), vk::Cast(pRenderPassBegin->framebuffer), pRenderPassBegin->renderArea, pRenderPassBegin->clearValueCount, pRenderPassBegin->pClearValues, pSubpassBeginInfo->contents);
+}
+
 VKAPI_ATTR void VKAPI_CALL vkCmdNextSubpass(VkCommandBuffer commandBuffer, VkSubpassContents contents)
 {
 	TRACE("(VkCommandBuffer commandBuffer = %p, VkSubpassContents contents = %d)",
@@ -2422,9 +2491,24 @@ VKAPI_ATTR void VKAPI_CALL vkCmdNextSubpass(VkCommandBuffer commandBuffer, VkSub
 	vk::Cast(commandBuffer)->nextSubpass(contents);
 }
 
+VKAPI_ATTR void VKAPI_CALL vkCmdNextSubpass2KHR(VkCommandBuffer commandBuffer, const VkSubpassBeginInfoKHR *pSubpassBeginInfo, const VkSubpassEndInfoKHR *pSubpassEndInfo)
+{
+	TRACE("(VkCommandBuffer commandBuffer = %p, const VkSubpassBeginInfoKHR* pSubpassBeginInfo = %p, const VkSubpassEndInfoKHR* pSubpassEndInfo = %p)",
+	      commandBuffer, pSubpassBeginInfo, pSubpassEndInfo);
+
+	vk::Cast(commandBuffer)->nextSubpass(pSubpassBeginInfo->contents);
+}
+
 VKAPI_ATTR void VKAPI_CALL vkCmdEndRenderPass(VkCommandBuffer commandBuffer)
 {
 	TRACE("(VkCommandBuffer commandBuffer = %p)", commandBuffer);
+
+	vk::Cast(commandBuffer)->endRenderPass();
+}
+
+VKAPI_ATTR void VKAPI_CALL vkCmdEndRenderPass2KHR(VkCommandBuffer commandBuffer, const VkSubpassEndInfoKHR *pSubpassEndInfo)
+{
+	TRACE("(VkCommandBuffer commandBuffer = %p, const VkSubpassEndInfoKHR* pSubpassEndInfo = %p)", commandBuffer, pSubpassEndInfo);
 
 	vk::Cast(commandBuffer)->endRenderPass();
 }
@@ -2699,6 +2783,12 @@ VKAPI_ATTR void VKAPI_CALL vkGetPhysicalDeviceFeatures2(VkPhysicalDevice physica
 				vk::Cast(physicalDevice)->getFeatures(features);
 			}
 			break;
+			case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SEPARATE_DEPTH_STENCIL_LAYOUTS_FEATURES_KHR:
+			{
+				auto features = reinterpret_cast<VkPhysicalDeviceSeparateDepthStencilLayoutsFeaturesKHR *>(extensionFeatures);
+				vk::Cast(physicalDevice)->getFeatures(features);
+			}
+			break;
 			case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_LINE_RASTERIZATION_FEATURES_EXT:
 			{
 				auto features = reinterpret_cast<VkPhysicalDeviceLineRasterizationFeaturesEXT *>(extensionFeatures);
@@ -2793,9 +2883,11 @@ VKAPI_ATTR void VKAPI_CALL vkGetPhysicalDeviceProperties2(VkPhysicalDevice physi
 				                             sizeof(deviceExtensionProperties) / sizeof(deviceExtensionProperties[0])));
 				break;
 			case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTERNAL_MEMORY_HOST_PROPERTIES_EXT:
-				ASSERT(!HasExtensionProperty(VK_EXT_EXTERNAL_MEMORY_HOST_EXTENSION_NAME, deviceExtensionProperties,
-				                             sizeof(deviceExtensionProperties) / sizeof(deviceExtensionProperties[0])));
-				break;
+			{
+				auto properties = reinterpret_cast<VkPhysicalDeviceExternalMemoryHostPropertiesEXT *>(extensionProperties);
+				vk::Cast(physicalDevice)->getProperties(properties);
+			}
+			break;
 			case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRIVER_PROPERTIES_KHR:
 			{
 				auto properties = reinterpret_cast<VkPhysicalDeviceDriverPropertiesKHR *>(extensionProperties);

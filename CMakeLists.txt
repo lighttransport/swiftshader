@@ -110,6 +110,7 @@ option_if_not_defined(SWIFTSHADER_USE_GROUP_SOURCES "Group the source files in a
 
 option_if_not_defined(SWIFTSHADER_BUILD_SAMPLES "Build sample programs" 1)
 option_if_not_defined(SWIFTSHADER_BUILD_TESTS "Build test programs" 1)
+option_if_not_defined(SWIFTSHADER_BUILD_BENCHMARKS "Build benchmarks" 0)
 
 option_if_not_defined(SWIFTSHADER_MSAN "Build with memory sanitizer" 0)
 option_if_not_defined(SWIFTSHADER_ASAN "Build with address sanitizer" 0)
@@ -119,6 +120,7 @@ option_if_not_defined(SWIFTSHADER_WARNINGS_AS_ERRORS "Treat all warnings as erro
 option_if_not_defined(SWIFTSHADER_DCHECK_ALWAYS_ON "Check validation macros even in release builds" 0)
 option_if_not_defined(REACTOR_EMIT_DEBUG_INFO "Emit debug info for JIT functions" 0)
 option_if_not_defined(REACTOR_EMIT_PRINT_LOCATION "Emit printing of location info for JIT functions" 0)
+option_if_not_defined(REACTOR_ENABLE_PRINT "Enable RR_PRINT macros" 0)
 option_if_not_defined(REACTOR_VERIFY_LLVM_IR "Check reactor-generated LLVM IR is valid even in release builds" 0)
 option_if_not_defined(SWIFTSHADER_LESS_DEBUG_INFO "Generate less debug info to reduce file size" 0)
 option_if_not_defined(SWIFTSHADER_ENABLE_VULKAN_DEBUGGER "Enable vulkan debugger support" 0)
@@ -160,16 +162,31 @@ set_property(GLOBAL PROPERTY USE_FOLDERS ON)
 # Initialize submodules
 ###########################################################
 
-if (NOT TARGET gtest)
-    if(NOT EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/third_party/googletest/.git)
-        message(WARNING "
-      third_party/googletest submodule missing.
-      Running 'git submodule update --init' to download it:
-        ")
+if (SWIFTSHADER_BUILD_TESTS)
+    if (NOT TARGET gtest)
+        if(NOT EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/third_party/googletest/.git)
+            message(WARNING "
+        third_party/googletest submodule missing.
+        Running 'git submodule update --init' to download it:
+            ")
 
-        execute_process(COMMAND git submodule update --init ${CMAKE_CURRENT_SOURCE_DIR}/third_party/googletest)
+            execute_process(COMMAND git submodule update --init ${CMAKE_CURRENT_SOURCE_DIR}/third_party/googletest)
+        endif()
     endif()
 endif()
+
+if(SWIFTSHADER_BUILD_BENCHMARKS)
+    if (NOT TARGET benchmark::benchmark)
+        if(NOT EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/third_party/benchmark/.git)
+            message(WARNING "
+        third_party/benchmark submodule missing.
+        Running 'git submodule update --init' to download it:
+            ")
+
+            execute_process(COMMAND git submodule update --init ${CMAKE_CURRENT_SOURCE_DIR}/third_party/benchmark)
+        endif()
+    endif()
+endif(SWIFTSHADER_BUILD_BENCHMARKS)
 
 if (NOT TARGET libbacktrace)
     if(NOT EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/third_party/libbacktrace/src/.git)
@@ -317,7 +334,6 @@ set(LLVM_CONFIG_DIR ${THIRD_PARTY_DIR}/llvm-7.0/configs)
 set(LIBBACKTRACE_DIR ${THIRD_PARTY_DIR}/libbacktrace/src)
 set(LIBBACKTRACE_CONFIG_DIR ${THIRD_PARTY_DIR}/libbacktrace/config)
 set(LIBBACKTRACE_INCLUDE_DIR ${THIRD_PARTY_DIR}/libbacktrace/src)
-set(MARL_INCLUDE_DIR ${THIRD_PARTY_DIR}/marl/include)
 set(CPPDAP_DIR ${THIRD_PARTY_DIR}/cppdap)
 set(CPPDAP_INCLUDE_DIR ${CPPDAP_DIR}/include)
 set(JSON_INCLUDE_DIR ${THIRD_PARTY_DIR}/json/include)
@@ -392,6 +408,7 @@ if(MSVC)
 else()
     set_cpp_flag("-fno-exceptions")
 
+    # Explicitly enable these warnings.
     list(APPEND SWIFTSHADER_COMPILE_OPTIONS
         "-Wall"
         "-Wreorder"
@@ -405,6 +422,29 @@ else()
             "-Wstring-conversion"
             "-Wextra-semi"
             "-Wignored-qualifiers"
+        )
+    endif()
+
+    # Disable pedanitc warnings
+    if(CMAKE_CXX_COMPILER_ID MATCHES "GNU")
+        list(APPEND SWIFTSHADER_COMPILE_OPTIONS
+            "-Wno-ignored-attributes"   # ignoring attributes on template argument 'X'
+            "-Wno-attributes"           # 'X' attribute ignored
+            "-Wno-strict-aliasing"      # dereferencing type-punned pointer will break strict-aliasing rules
+            "-Wno-comment"              # multi-line comment
+        )
+        if(CMAKE_CXX_COMPILER_VERSION VERSION_GREATER_EQUAL 9)
+            list(APPEND SWIFTSHADER_COMPILE_OPTIONS
+                "-Wno-init-list-lifetime"  # assignment from temporary initializer_list does not extend the lifetime of the underlying array
+            )
+        endif()
+    elseif(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+        list(APPEND SWIFTSHADER_COMPILE_OPTIONS
+            "-Wno-unneeded-internal-declaration"  # function 'X' is not needed and will not be emitted
+            "-Wno-unused-private-field"           # private field 'offset' is not used - TODO: Consider enabling this once Vulkan is further implemented.
+            "-Wno-comment"                        # multi-line comment
+            "-Wno-undefined-var-template"         # instantiation of variable 'X' required here, but no definition is available
+
             # Silence errors caused by unknown warnings when building with older
             # versions of Clang. This demands checking that warnings added above
             # are spelled correctly and work as intended!
@@ -435,15 +475,19 @@ else()
         set_cpp_flag("-mtune=generic")
     endif()
     if(ARCH STREQUAL "mipsel")
+        set_cpp_flag("-EL")
         set_cpp_flag("-march=mips32r2")
         set_cpp_flag("-fPIC")
         set_cpp_flag("-mhard-float")
         set_cpp_flag("-mfp32")
+        set_cpp_flag("-mxgot")
     endif()
     if(ARCH STREQUAL "mips64el")
+        set_cpp_flag("-EL")
         set_cpp_flag("-march=mips64r2")
         set_cpp_flag("-mabi=64")
         set_cpp_flag("-fPIC")
+        set_cpp_flag("-mxgot")
     endif()
 
     if(SWIFTSHADER_LESS_DEBUG_INFO)
@@ -467,23 +511,6 @@ else()
 
     if(SWIFTSHADER_DCHECK_ALWAYS_ON)
         list(APPEND SWIFTSHADER_COMPILE_OPTIONS "-DDCHECK_ALWAYS_ON")
-    endif()
-
-    # Disable pedanitc warnings
-    if(CMAKE_CXX_COMPILER_ID MATCHES "GNU")
-        list(APPEND SWIFTSHADER_COMPILE_OPTIONS
-            "-Wno-ignored-attributes"   # ignoring attributes on template argument 'X'
-            "-Wno-attributes"           # 'X' attribute ignored
-            "-Wno-strict-aliasing"      # dereferencing type-punned pointer will break strict-aliasing rules
-            "-Wno-comment"              # multi-line comment
-        )
-    elseif(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
-        list(APPEND SWIFTSHADER_COMPILE_OPTIONS
-            "-Wno-unneeded-internal-declaration"  # function 'X' is not needed and will not be emitted
-            "-Wno-unused-private-field"           # private field 'offset' is not used - TODO: Consider enabling this once Vulkan is further implemented.
-            "-Wno-comment"                        # multi-line comment
-            "-Wno-undefined-var-template"         # instantiation of variable 'X' required here, but no definition is available
-        )
     endif()
 
     # For distribution it is more important to be slim than super optimized
@@ -517,14 +544,19 @@ else()
 endif()
 
 if(REACTOR_EMIT_PRINT_LOCATION)
-    # This feature depends on REACTOR_EMIT_DEBUG_INFO, so enable it
+    # This feature depends on REACTOR_EMIT_DEBUG_INFO and REACTOR_ENABLE_PRINT
     set(REACTOR_EMIT_DEBUG_INFO "On")
+    set(REACTOR_ENABLE_PRINT "On")
     list(APPEND SWIFTSHADER_COMPILE_OPTIONS "-DENABLE_RR_EMIT_PRINT_LOCATION")
 endif()
 
 if(REACTOR_EMIT_DEBUG_INFO)
     message(WARNING "REACTOR_EMIT_DEBUG_INFO is enabled. This will likely affect performance.")
     list(APPEND SWIFTSHADER_COMPILE_OPTIONS "-DENABLE_RR_DEBUG_INFO")
+endif()
+
+if(REACTOR_ENABLE_PRINT)
+    list(APPEND SWIFTSHADER_COMPILE_OPTIONS "-DENABLE_RR_PRINT")
 endif()
 
 if(REACTOR_VERIFY_LLVM_IR)
@@ -1480,6 +1512,11 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "GNU")
             "-Wno-attributes"	# declared inline but not inline
         )
     endif()
+    if(CMAKE_CXX_COMPILER_VERSION VERSION_GREATER_EQUAL 9)
+        list(APPEND LLVM_COMPILE_OPTIONS
+            "-Wno-init-list-lifetime"  # assignment from temporary initializer_list does not extend the lifetime of the underlying array
+        )
+    endif()
 elseif(CMAKE_CXX_COMPILER_ID MATCHES "MSVC")
     list(APPEND LLVM_COMPILE_OPTIONS
         "/wd4141" # 'inline': used more than once
@@ -1597,6 +1634,8 @@ if(${REACTOR_BACKEND} STREQUAL "Subzero")
         ${SOURCE_DIR}/Reactor/Print.hpp
         ${SOURCE_DIR}/Reactor/Reactor.cpp
         ${SOURCE_DIR}/Reactor/Reactor.hpp
+        ${SOURCE_DIR}/Reactor/ReactorDebugInfo.cpp
+        ${SOURCE_DIR}/Reactor/ReactorDebugInfo.hpp
         ${SOURCE_DIR}/Reactor/Routine.hpp
         ${SOURCE_DIR}/Reactor/SubzeroReactor.cpp
     )
@@ -1658,7 +1697,6 @@ set(OPENGL_INCLUDE_DIR
 
 set(VULKAN_INCLUDE_DIR
     ${COMMON_INCLUDE_DIR}
-    ${MARL_INCLUDE_DIR}
     ${CPPDAP_INCLUDE_DIR}
 )
 
@@ -1729,6 +1767,7 @@ set(REACTOR_LLVM_LIST
     ${SOURCE_DIR}/Reactor/EmulatedReactor.cpp
     ${SOURCE_DIR}/Reactor/ExecutableMemory.cpp
     ${SOURCE_DIR}/Reactor/ExecutableMemory.hpp
+    ${SOURCE_DIR}/Reactor/LLVMJIT.cpp
     ${SOURCE_DIR}/Reactor/LLVMReactor.cpp
     ${SOURCE_DIR}/Reactor/LLVMReactor.hpp
     ${SOURCE_DIR}/Reactor/LLVMReactorDebugInfo.cpp
@@ -1737,6 +1776,8 @@ set(REACTOR_LLVM_LIST
     ${SOURCE_DIR}/Reactor/Print.hpp
     ${SOURCE_DIR}/Reactor/Reactor.cpp
     ${SOURCE_DIR}/Reactor/Reactor.hpp
+    ${SOURCE_DIR}/Reactor/ReactorDebugInfo.cpp
+    ${SOURCE_DIR}/Reactor/ReactorDebugInfo.hpp
     ${SOURCE_DIR}/Reactor/Routine.hpp
 )
 
@@ -1959,43 +2000,42 @@ if(${REACTOR_BACKEND} STREQUAL "LLVM")
         COMPILE_OPTIONS "${SWIFTSHADER_COMPILE_OPTIONS}"
     )
     target_link_libraries(ReactorLLVM llvm ${OS_LIBS})
-
-    if(REACTOR_EMIT_DEBUG_INFO)
-        if(WIN32)
-            # Boost stacktrace uses COM on Windows.
-            # On Windows, cache COM instances in TLS for performance.
-            target_compile_definitions(ReactorLLVM PRIVATE BOOST_STACKTRACE_USE_WINDBG_CACHED)
-        else()
-            # Boost stacktrace uses libbacktrace
-            target_compile_definitions(ReactorLLVM PRIVATE BOOST_STACKTRACE_USE_BACKTRACE)
-
-            # Boost stacktrace uses exceptions, so force enable it
-            set_cpp_flag("-fexceptions")
-
-            add_library(Libbacktrace STATIC ${LIBBACKTRACE_LIST})
-            set_target_properties(Libbacktrace PROPERTIES
-                INCLUDE_DIRECTORIES "${LIBBACKTRACE_INCLUDE_DIR}"
-                POSITION_INDEPENDENT_CODE 1
-                FOLDER "Core"
-            )
-            target_link_libraries(Libbacktrace ${OS_LIBS})
-            target_link_libraries(ReactorLLVM Libbacktrace)
-        endif()
-
-        # Download boost and use it
-        DownloadBoost()
-        set(BOOST_INCLUDEDIR ${BOOST_THIRD_PARTY_DIR})
-        find_package(Boost REQUIRED)
-        target_link_libraries(ReactorLLVM Boost::boost)
-
-    endif(REACTOR_EMIT_DEBUG_INFO)
-
     set(Reactor ReactorLLVM)
 elseif(${REACTOR_BACKEND} STREQUAL "Subzero")
     set(Reactor ReactorSubzero)
 else()
     message(FATAL_ERROR "REACTOR_BACKEND must be 'LLVM' or 'Subzero'")
 endif()
+
+if(REACTOR_EMIT_DEBUG_INFO)
+    if(WIN32)
+        # Boost stacktrace uses COM on Windows.
+        # On Windows, cache COM instances in TLS for performance.
+        target_compile_definitions(${Reactor} PRIVATE BOOST_STACKTRACE_USE_WINDBG_CACHED)
+    else()
+        # Boost stacktrace uses libbacktrace
+        target_compile_definitions(${Reactor} PRIVATE BOOST_STACKTRACE_USE_BACKTRACE)
+
+        # Boost stacktrace uses exceptions, so force enable it
+        set_cpp_flag("-fexceptions")
+
+        add_library(Libbacktrace STATIC ${LIBBACKTRACE_LIST})
+        set_target_properties(Libbacktrace PROPERTIES
+            INCLUDE_DIRECTORIES "${LIBBACKTRACE_INCLUDE_DIR}"
+            POSITION_INDEPENDENT_CODE 1
+            FOLDER "Core"
+        )
+        target_link_libraries(Libbacktrace ${OS_LIBS})
+        target_link_libraries(${Reactor} Libbacktrace)
+    endif()
+
+    # Download boost and use it
+    DownloadBoost()
+    set(BOOST_INCLUDEDIR ${BOOST_THIRD_PARTY_DIR})
+    find_package(Boost REQUIRED)
+    target_link_libraries(${Reactor} Boost::boost)
+
+endif(REACTOR_EMIT_DEBUG_INFO)
 
 add_library(GLCompiler STATIC ${OPENGL_COMPILER_LIST})
 set_target_properties(GLCompiler PROPERTIES
@@ -2130,9 +2170,11 @@ if(SWIFTSHADER_BUILD_VULKAN)
     )
 
     if(WIN32)
+        set(VULKAN_API_LIBRARY_NAME "vulkan-1.dll")
         set_property(TARGET vk_swiftshader APPEND
                      PROPERTY COMPILE_DEFINITIONS "VK_USE_PLATFORM_WIN32_KHR")
     elseif(LINUX)
+        set(VULKAN_API_LIBRARY_NAME "libvulkan.so.1")
         if(X11)
             set_property(TARGET vk_swiftshader APPEND
                         PROPERTY COMPILE_DEFINITIONS "VK_USE_PLATFORM_XLIB_KHR")
@@ -2142,8 +2184,11 @@ if(SWIFTSHADER_BUILD_VULKAN)
                         PROPERTY COMPILE_DEFINITIONS "VK_USE_PLATFORM_XCB_KHR")
         endif()
     elseif(APPLE)
+        set(VULKAN_API_LIBRARY_NAME "libvulkan.dylib")
         set_property(TARGET vk_swiftshader APPEND
                      PROPERTY COMPILE_DEFINITIONS "VK_USE_PLATFORM_MACOS_MVK")
+    else()
+        message(FATAL_ERROR "Platform does not support Vulkan yet")
     endif()
 
     set_shared_library_export_map(vk_swiftshader ${SOURCE_DIR}/Vulkan)
@@ -2157,10 +2202,9 @@ if(SWIFTSHADER_BUILD_VULKAN)
     add_custom_command(
         TARGET vk_swiftshader
         POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E make_directory $<TARGET_FILE_DIR:vk_swiftshader>/translator
-        COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_FILE:vk_swiftshader> $<TARGET_FILE_DIR:vk_swiftshader>/translator/${LIB_PREFIX}Vulkan_translator${CMAKE_SHARED_LIBRARY_SUFFIX}
         COMMAND ${CMAKE_COMMAND} -E make_directory ${CMAKE_BINARY_DIR}/${CMAKE_SYSTEM_NAME}/
         COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_FILE:vk_swiftshader> ${CMAKE_BINARY_DIR}/${CMAKE_SYSTEM_NAME}/
+        COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_FILE:vk_swiftshader> ${CMAKE_BINARY_DIR}/${CMAKE_SYSTEM_NAME}/${VULKAN_API_LIBRARY_NAME}
     )
 
     # The vk_swiftshader_icd.json manifest file will point to ICD_LIBRARY_PATH.
@@ -2175,11 +2219,12 @@ if(SWIFTSHADER_BUILD_VULKAN)
     endif()
     configure_file(
         "${VULKAN_DIR}/vk_swiftshader_icd.json.tmpl"
-        "${CMAKE_BINARY_DIR}/${CMAKE_SYSTEM_NAME}/vk_swiftshader_icd.json")
-endif(SWIFTSHADER_BUILD_VULKAN)
+        "${CMAKE_BINARY_DIR}/${CMAKE_SYSTEM_NAME}/vk_swiftshader_icd.json"
+    )
+endif()
 
 ###########################################################
-# Sample programs
+# Sample programs and tests
 ###########################################################
 
 if(SWIFTSHADER_BUILD_SAMPLES)
@@ -2296,6 +2341,25 @@ if(SWIFTSHADER_BUILD_TESTS)
         target_link_libraries(math-unittests pthread)
     endif()
 endif(SWIFTSHADER_BUILD_TESTS)
+
+if(SWIFTSHADER_BUILD_BENCHMARKS)
+    if (NOT TARGET benchmark::benchmark)
+        set(BENCHMARK_ENABLE_TESTING FALSE CACHE BOOL FALSE FORCE)
+        add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/third_party/benchmark)
+    endif()
+
+    set(REACTOR_BENCHMARK_LIST
+        ${SOURCE_DIR}/Reactor/ReactorBenchmarks.cpp
+    )
+
+    add_executable(ReactorBenchmarks ${REACTOR_BENCHMARK_LIST})
+    target_link_libraries(ReactorBenchmarks benchmark::benchmark ${Reactor})
+
+    set_target_properties(ReactorBenchmarks PROPERTIES
+        COMPILE_OPTIONS "${SWIFTSHADER_COMPILE_OPTIONS}"
+        FOLDER "Benchmarks"
+    )
+endif(SWIFTSHADER_BUILD_BENCHMARKS)
 
 if(SWIFTSHADER_BUILD_TESTS AND SWIFTSHADER_BUILD_VULKAN)
     set(VK_UNITTESTS_LIST
