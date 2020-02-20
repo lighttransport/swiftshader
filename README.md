@@ -1,4 +1,13 @@
+# LTE SwiftShader(Vulkan only)
+
+SwiftShader Vulkan for LTE's need.
+
+## CMake options
+
+`SWIFTSHADER_LD` Specify the linker. `gold` or `lld`. For clang.
+
 # SwiftShader
+
 
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0) [![Build Status](https://travis-ci.org/google/swiftshader.svg?branch=master)](https://travis-ci.org/google/swiftshader) [![Build status](https://ci.appveyor.com/api/projects/status/yrmyvb34j22jg1uj?svg=true)](https://ci.appveyor.com/project/c0d1f1ed/swiftshader)
 
