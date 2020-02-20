@@ -125,6 +125,8 @@ option_if_not_defined(REACTOR_VERIFY_LLVM_IR "Check reactor-generated LLVM IR is
 option_if_not_defined(SWIFTSHADER_LESS_DEBUG_INFO "Generate less debug info to reduce file size" 0)
 option_if_not_defined(SWIFTSHADER_ENABLE_VULKAN_DEBUGGER "Enable vulkan debugger support" 0)
 
+option_if_not_defined(SWIFTSHADER_LD "Linker used for clang compiler" "gold")
+
 set(BUILD_MARL ${SWIFTSHADER_BUILD_VULKAN})
 
 if(${SWIFTSHADER_BUILD_VULKAN} AND ${SWIFTSHADER_ENABLE_VULKAN_DEBUGGER})
@@ -290,7 +292,9 @@ macro(set_shared_library_export_map TARGET DIR)
     elseif(LINUX)
         # Need to use gold or lld for clang, otherwise link error happens for marl's protected symbol for vulkan .so 
         if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
-          set_property(TARGET ${TARGET} APPEND_STRING PROPERTY LINK_FLAGS " -fuse-ld=gold")
+          if (SWIFTSHADER_LD)
+            set_property(TARGET ${TARGET} APPEND_STRING PROPERTY LINK_FLAGS " -fuse-ld=${SWIFTSHADER_LD}")
+          endif()
         endif()
         # The version script only exports the API functions and
         # hides all the others.
