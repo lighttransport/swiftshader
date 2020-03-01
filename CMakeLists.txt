@@ -100,16 +100,16 @@ function (set_if_not_defined name value)
     endif()
 endfunction()
 
-option_if_not_defined(SWIFTSHADER_BUILD_EGL "Build the EGL library" 1)
-option_if_not_defined(SWIFTSHADER_BUILD_GLESv2 "Build the OpenGL ES 2 library" 1)
-option_if_not_defined(SWIFTSHADER_BUILD_GLES_CM "Build the OpenGL ES 1.1 library" 1)
+option_if_not_defined(SWIFTSHADER_BUILD_EGL "Build the EGL library" 0)
+option_if_not_defined(SWIFTSHADER_BUILD_GLESv2 "Build the OpenGL ES 2 library" 0)
+option_if_not_defined(SWIFTSHADER_BUILD_GLES_CM "Build the OpenGL ES 1.1 library" 0)
 option_if_not_defined(SWIFTSHADER_BUILD_VULKAN "Build the Vulkan library" 1)
 option_if_not_defined(SWIFTSHADER_BUILD_PVR "Fetch and build the PowerVR examples" 0)
 
 option_if_not_defined(SWIFTSHADER_USE_GROUP_SOURCES "Group the source files in a folder tree for Visual Studio" 1)
 
-option_if_not_defined(SWIFTSHADER_BUILD_SAMPLES "Build sample programs" 1)
-option_if_not_defined(SWIFTSHADER_BUILD_TESTS "Build test programs" 1)
+option_if_not_defined(SWIFTSHADER_BUILD_SAMPLES "Build sample programs" 0)
+option_if_not_defined(SWIFTSHADER_BUILD_TESTS "Build test programs" 0)
 option_if_not_defined(SWIFTSHADER_BUILD_BENCHMARKS "Build benchmarks" 0)
 
 option_if_not_defined(SWIFTSHADER_MSAN "Build with memory sanitizer" 0)
@@ -124,6 +124,8 @@ option_if_not_defined(REACTOR_ENABLE_PRINT "Enable RR_PRINT macros" 0)
 option_if_not_defined(REACTOR_VERIFY_LLVM_IR "Check reactor-generated LLVM IR is valid even in release builds" 0)
 option_if_not_defined(SWIFTSHADER_LESS_DEBUG_INFO "Generate less debug info to reduce file size" 0)
 option_if_not_defined(SWIFTSHADER_ENABLE_VULKAN_DEBUGGER "Enable vulkan debugger support" 0)
+
+option_if_not_defined(SWIFTSHADER_LD "Linker used for clang compiler" "gold")
 
 set(BUILD_MARL ${SWIFTSHADER_BUILD_VULKAN})
 
@@ -288,6 +290,12 @@ macro(set_shared_library_export_map TARGET DIR)
             set_property(TARGET ${TARGET} APPEND_STRING PROPERTY LINK_FLAGS " -Wl,-undefined,error")
         endif()
     elseif(LINUX)
+        # Need to use gold or lld for clang, otherwise link error happens for marl's protected symbol for vulkan .so 
+        if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+          if (SWIFTSHADER_LD)
+            set_property(TARGET ${TARGET} APPEND_STRING PROPERTY LINK_FLAGS " -fuse-ld=${SWIFTSHADER_LD}")
+          endif()
+        endif()
         # The version script only exports the API functions and
         # hides all the others.
         set_property(TARGET ${TARGET} APPEND_STRING PROPERTY LINK_FLAGS " -Wl,--version-script=${DIR}/${TARGET}.lds")
