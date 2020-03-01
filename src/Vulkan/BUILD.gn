@@ -60,7 +60,6 @@ swiftshader_source_set("swiftshader_libvulkan_headers") {
     "VkCommandBuffer.hpp",
     "VkCommandPool.hpp",
     "VkConfig.h",
-    "VkDebug.hpp",
     "VkDescriptorPool.hpp",
     "VkDescriptorSet.hpp",
     "VkDescriptorSetLayout.hpp",
@@ -109,7 +108,6 @@ swiftshader_shared_library("swiftshader_libvulkan") {
     "VkBufferView.cpp",
     "VkCommandBuffer.cpp",
     "VkCommandPool.cpp",
-    "VkDebug.cpp",
     "VkDescriptorPool.cpp",
     "VkDescriptorSetLayout.cpp",
     "VkDescriptorUpdateTemplate.cpp",
@@ -160,8 +158,12 @@ swiftshader_shared_library("swiftshader_libvulkan") {
     inputs = [
       "vk_swiftshader.lds",
     ]
-    ldflags = [ "-Wl,--version-script=" +
-                rebase_path("vk_swiftshader.lds", root_build_dir) ]
+    ldflags = [
+      # -Bsymbolic binds symbol references to their global definitions within
+      # a shared object, thereby preventing symbol preemption.
+      "-Wl,-Bsymbolic",
+      "-Wl,--version-script=" +
+          rebase_path("vk_swiftshader.lds", root_build_dir) ]
   }
 
   deps = [

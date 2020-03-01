@@ -16,7 +16,9 @@
 
 #include "CPUID.hpp"
 #include "Debug.hpp"
+#include "EmulatedReactor.hpp"
 #include "LLVMReactorDebugInfo.hpp"
+#include "Print.hpp"
 #include "Reactor.hpp"
 #include "x86.hpp"
 
@@ -53,7 +55,7 @@
 #if defined(__x86_64__) && defined(_WIN32)
 extern "C" void X86CompilationCallback()
 {
-	UNIMPLEMENTED("X86CompilationCallback");
+	UNIMPLEMENTED_NO_BUG("X86CompilationCallback");
 }
 #endif
 
@@ -74,19 +76,6 @@ rr::Config &defaultConfig()
 	                               .apply({});
 	return config;
 }
-
-#ifdef ENABLE_RR_PRINT
-std::string replace(std::string str, const std::string &substr, const std::string &replacement)
-{
-	size_t pos = 0;
-	while((pos = str.find(substr, pos)) != std::string::npos)
-	{
-		str.replace(pos, substr.length(), replacement);
-		pos += replacement.length();
-	}
-	return str;
-}
-#endif  // ENABLE_RR_PRINT
 
 llvm::Value *lowerPAVG(llvm::Value *x, llvm::Value *y)
 {
@@ -643,55 +632,70 @@ Config Nucleus::getDefaultConfig()
 
 std::shared_ptr<Routine> Nucleus::acquireRoutine(const char *name, const Config::Edit &cfgEdit /* = Config::Edit::None */)
 {
-	auto cfg = cfgEdit.apply(jit->config);
+	std::shared_ptr<Routine> routine;
 
-	if(jit->builder->GetInsertBlock()->empty() || !jit->builder->GetInsertBlock()->back().isTerminator())
-	{
-		llvm::Type *type = jit->function->getReturnType();
+	auto acquire = [&]() {
+		auto cfg = cfgEdit.apply(jit->config);
 
-		if(type->isVoidTy())
+		if(jit->builder->GetInsertBlock()->empty() || !jit->builder->GetInsertBlock()->back().isTerminator())
 		{
-			createRetVoid();
+			llvm::Type *type = jit->function->getReturnType();
+
+			if(type->isVoidTy())
+			{
+				createRetVoid();
+			}
+			else
+			{
+				createRet(V(llvm::UndefValue::get(type)));
+			}
 		}
-		else
-		{
-			createRet(V(llvm::UndefValue::get(type)));
-		}
-	}
 
 #ifdef ENABLE_RR_DEBUG_INFO
-	if(jit->debugInfo != nullptr)
-	{
-		jit->debugInfo->Finalize();
-	}
+		if(jit->debugInfo != nullptr)
+		{
+			jit->debugInfo->Finalize();
+		}
 #endif  // ENABLE_RR_DEBUG_INFO
 
-	if(false)
-	{
-		std::error_code error;
-		llvm::raw_fd_ostream file(std::string(name) + "-llvm-dump-unopt.txt", error);
-		jit->module->print(file, 0);
-	}
+		if(false)
+		{
+			std::error_code error;
+			llvm::raw_fd_ostream file(std::string(name) + "-llvm-dump-unopt.txt", error);
+			jit->module->print(file, 0);
+		}
 
 #if defined(ENABLE_RR_LLVM_IR_VERIFICATION) || !defined(NDEBUG)
-	{
-		llvm::legacy::PassManager pm;
-		pm.add(llvm::createVerifierPass());
-		pm.run(*jit->module);
-	}
+		{
+			llvm::legacy::PassManager pm;
+			pm.add(llvm::createVerifierPass());
+			pm.run(*jit->module);
+		}
 #endif  // defined(ENABLE_RR_LLVM_IR_VERIFICATION) || !defined(NDEBUG)
 
-	jit->optimize(cfg);
+		jit->optimize(cfg);
 
-	if(false)
-	{
-		std::error_code error;
-		llvm::raw_fd_ostream file(std::string(name) + "-llvm-dump-opt.txt", error);
-		jit->module->print(file, 0);
-	}
+		if(false)
+		{
+			std::error_code error;
+			llvm::raw_fd_ostream file(std::string(name) + "-llvm-dump-opt.txt", error);
+			jit->module->print(file, 0);
+		}
 
-	auto routine = jit->acquireRoutine(&jit->function, 1, cfg);
-	jit.reset();
+		routine = jit->acquireRoutine(&jit->function, 1, cfg);
+		jit.reset();
+	};
+
+#ifdef JIT_IN_SEPARATE_THREAD
+	// Perform optimizations and codegen in a separate thread to avoid stack overflow.
+	// FIXME(b/149829034): This is not a long-term solution. Reactor has no control
+	// over the threading and stack sizes of its users, so this should be addressed
+	// at a higher level instead.
+	std::thread thread(acquire);
+	thread.join();
+#else
+	acquire();
+#endif
 
 	return routine;
 }
@@ -1120,6 +1124,8 @@ Value *Nucleus::createStore(Value *value, Value *ptr, Type *type, bool isVolatil
 
 Value *Nucleus::createMaskedLoad(Value *ptr, Type *elTy, Value *mask, unsigned int alignment, bool zeroMaskedLanes)
 {
+	RR_DEBUG_INFO_UPDATE_LOC();
+
 	ASSERT(V(ptr)->getType()->isPointerTy());
 	ASSERT(V(mask)->getType()->isVectorTy());
 
@@ -1137,6 +1143,8 @@ Value *Nucleus::createMaskedLoad(Value *ptr, Type *elTy, Value *mask, unsigned i
 
 void Nucleus::createMaskedStore(Value *ptr, Value *val, Value *mask, unsigned int alignment)
 {
+	RR_DEBUG_INFO_UPDATE_LOC();
+
 	ASSERT(V(ptr)->getType()->isPointerTy());
 	ASSERT(V(val)->getType()->isVectorTy());
 	ASSERT(V(mask)->getType()->isVectorTy());
@@ -1174,6 +1182,7 @@ void Scatter(RValue<Pointer<Int>> base, RValue<Int4> val, RValue<Int4> offsets, 
 
 void Nucleus::createFence(std::memory_order memoryOrder)
 {
+	RR_DEBUG_INFO_UPDATE_LOC();
 	jit->builder->CreateFence(atomicOrdering(true, memoryOrder));
 }
 
@@ -1565,9 +1574,40 @@ void Nucleus::createUnreachable()
 	jit->builder->CreateUnreachable();
 }
 
+Type *Nucleus::getType(Value *value)
+{
+	return T(V(value)->getType());
+}
+
+Type *Nucleus::getContainedType(Type *vectorType)
+{
+	return T(T(vectorType)->getContainedType(0));
+}
+
 Type *Nucleus::getPointerType(Type *ElementType)
 {
 	return T(llvm::PointerType::get(T(ElementType), 0));
+}
+
+static ::llvm::Type *getNaturalIntType()
+{
+	return ::llvm::Type::getIntNTy(jit->context, sizeof(int) * 8);
+}
+
+Type *Nucleus::getPrintfStorageType(Type *valueType)
+{
+	llvm::Type *valueTy = T(valueType);
+	if(valueTy->isIntegerTy())
+	{
+		return T(getNaturalIntType());
+	}
+	if(valueTy->isFloatTy())
+	{
+		return T(llvm::Type::getDoubleTy(jit->context));
+	}
+
+	UNIMPLEMENTED_NO_BUG("getPrintfStorageType: add more cases as needed");
+	return {};
 }
 
 Value *Nucleus::createNullValue(Type *Ty)
@@ -1638,6 +1678,7 @@ Value *Nucleus::createNullPointer(Type *Ty)
 
 Value *Nucleus::createConstantVector(const int64_t *constants, Type *type)
 {
+	RR_DEBUG_INFO_UPDATE_LOC();
 	ASSERT(llvm::isa<llvm::VectorType>(T(type)));
 	const int numConstants = elementCount(type);                                      // Number of provided constants for the (emulated) type.
 	const int numElements = llvm::cast<llvm::VectorType>(T(type))->getNumElements();  // Number of elements of the underlying vector type.
@@ -1654,6 +1695,7 @@ Value *Nucleus::createConstantVector(const int64_t *constants, Type *type)
 
 Value *Nucleus::createConstantVector(const double *constants, Type *type)
 {
+	RR_DEBUG_INFO_UPDATE_LOC();
 	ASSERT(llvm::isa<llvm::VectorType>(T(type)));
 	const int numConstants = elementCount(type);                                      // Number of provided constants for the (emulated) type.
 	const int numElements = llvm::cast<llvm::VectorType>(T(type))->getNumElements();  // Number of elements of the underlying vector type.
@@ -1666,6 +1708,13 @@ Value *Nucleus::createConstantVector(const double *constants, Type *type)
 	}
 
 	return V(llvm::ConstantVector::get(llvm::ArrayRef<llvm::Constant *>(constantVector, numElements)));
+}
+
+Value *Nucleus::createConstantString(const char *v)
+{
+	// NOTE: Do not call RR_DEBUG_INFO_UPDATE_LOC() here to avoid recursion when called from rr::Printv
+	auto ptr = jit->builder->CreateGlobalStringPtr(v);
+	return V(ptr);
 }
 
 Type *Void::getType()
@@ -3126,18 +3175,21 @@ RValue<Float4> Ceil(RValue<Float4> x)
 
 RValue<Float4> Sin(RValue<Float4> v)
 {
+	RR_DEBUG_INFO_UPDATE_LOC();
 	auto func = llvm::Intrinsic::getDeclaration(jit->module.get(), llvm::Intrinsic::sin, { V(v.value)->getType() });
 	return RValue<Float4>(V(jit->builder->CreateCall(func, V(v.value))));
 }
 
 RValue<Float4> Cos(RValue<Float4> v)
 {
+	RR_DEBUG_INFO_UPDATE_LOC();
 	auto func = llvm::Intrinsic::getDeclaration(jit->module.get(), llvm::Intrinsic::cos, { V(v.value)->getType() });
 	return RValue<Float4>(V(jit->builder->CreateCall(func, V(v.value))));
 }
 
 RValue<Float4> Tan(RValue<Float4> v)
 {
+	RR_DEBUG_INFO_UPDATE_LOC();
 	return Sin(v) / Cos(v);
 }
 
@@ -3156,51 +3208,61 @@ static RValue<Float4> TransformFloat4PerElement(RValue<Float4> v, const char *na
 
 RValue<Float4> Asin(RValue<Float4> v)
 {
+	RR_DEBUG_INFO_UPDATE_LOC();
 	return TransformFloat4PerElement(v, "asinf");
 }
 
 RValue<Float4> Acos(RValue<Float4> v)
 {
+	RR_DEBUG_INFO_UPDATE_LOC();
 	return TransformFloat4PerElement(v, "acosf");
 }
 
 RValue<Float4> Atan(RValue<Float4> v)
 {
+	RR_DEBUG_INFO_UPDATE_LOC();
 	return TransformFloat4PerElement(v, "atanf");
 }
 
 RValue<Float4> Sinh(RValue<Float4> v)
 {
-	return Float4(0.5f) * (Exp(v) - Exp(-v));
+	RR_DEBUG_INFO_UPDATE_LOC();
+	return emulated::Sinh(v);
 }
 
 RValue<Float4> Cosh(RValue<Float4> v)
 {
-	return Float4(0.5f) * (Exp(v) + Exp(-v));
+	RR_DEBUG_INFO_UPDATE_LOC();
+	return emulated::Cosh(v);
 }
 
 RValue<Float4> Tanh(RValue<Float4> v)
 {
+	RR_DEBUG_INFO_UPDATE_LOC();
 	return TransformFloat4PerElement(v, "tanhf");
 }
 
 RValue<Float4> Asinh(RValue<Float4> v)
 {
+	RR_DEBUG_INFO_UPDATE_LOC();
 	return TransformFloat4PerElement(v, "asinhf");
 }
 
 RValue<Float4> Acosh(RValue<Float4> v)
 {
+	RR_DEBUG_INFO_UPDATE_LOC();
 	return TransformFloat4PerElement(v, "acoshf");
 }
 
 RValue<Float4> Atanh(RValue<Float4> v)
 {
+	RR_DEBUG_INFO_UPDATE_LOC();
 	return TransformFloat4PerElement(v, "atanhf");
 }
 
 RValue<Float4> Atan2(RValue<Float4> x, RValue<Float4> y)
 {
+	RR_DEBUG_INFO_UPDATE_LOC();
 	::llvm::SmallVector<::llvm::Type *, 2> paramTys;
 	paramTys.push_back(T(Float::getType()));
 	paramTys.push_back(T(Float::getType()));
@@ -3219,36 +3281,42 @@ RValue<Float4> Atan2(RValue<Float4> x, RValue<Float4> y)
 
 RValue<Float4> Pow(RValue<Float4> x, RValue<Float4> y)
 {
+	RR_DEBUG_INFO_UPDATE_LOC();
 	auto func = llvm::Intrinsic::getDeclaration(jit->module.get(), llvm::Intrinsic::pow, { T(Float4::getType()) });
 	return RValue<Float4>(V(jit->builder->CreateCall2(func, ARGS(V(x.value), V(y.value)))));
 }
 
 RValue<Float4> Exp(RValue<Float4> v)
 {
+	RR_DEBUG_INFO_UPDATE_LOC();
 	auto func = llvm::Intrinsic::getDeclaration(jit->module.get(), llvm::Intrinsic::exp, { T(Float4::getType()) });
 	return RValue<Float4>(V(jit->builder->CreateCall(func, V(v.value))));
 }
 
 RValue<Float4> Log(RValue<Float4> v)
 {
+	RR_DEBUG_INFO_UPDATE_LOC();
 	auto func = llvm::Intrinsic::getDeclaration(jit->module.get(), llvm::Intrinsic::log, { T(Float4::getType()) });
 	return RValue<Float4>(V(jit->builder->CreateCall(func, V(v.value))));
 }
 
 RValue<Float4> Exp2(RValue<Float4> v)
 {
+	RR_DEBUG_INFO_UPDATE_LOC();
 	auto func = llvm::Intrinsic::getDeclaration(jit->module.get(), llvm::Intrinsic::exp2, { T(Float4::getType()) });
 	return RValue<Float4>(V(jit->builder->CreateCall(func, V(v.value))));
 }
 
 RValue<Float4> Log2(RValue<Float4> v)
 {
+	RR_DEBUG_INFO_UPDATE_LOC();
 	auto func = llvm::Intrinsic::getDeclaration(jit->module.get(), llvm::Intrinsic::log2, { T(Float4::getType()) });
 	return RValue<Float4>(V(jit->builder->CreateCall(func, V(v.value))));
 }
 
 RValue<UInt> Ctlz(RValue<UInt> v, bool isZeroUndef)
 {
+	RR_DEBUG_INFO_UPDATE_LOC();
 	auto func = llvm::Intrinsic::getDeclaration(jit->module.get(), llvm::Intrinsic::ctlz, { T(UInt::getType()) });
 	return RValue<UInt>(V(jit->builder->CreateCall2(func, ARGS(
 	                                                          V(v.value),
@@ -3257,6 +3325,7 @@ RValue<UInt> Ctlz(RValue<UInt> v, bool isZeroUndef)
 
 RValue<UInt4> Ctlz(RValue<UInt4> v, bool isZeroUndef)
 {
+	RR_DEBUG_INFO_UPDATE_LOC();
 	auto func = llvm::Intrinsic::getDeclaration(jit->module.get(), llvm::Intrinsic::ctlz, { T(UInt4::getType()) });
 	return RValue<UInt4>(V(jit->builder->CreateCall2(func, ARGS(
 	                                                           V(v.value),
@@ -3265,6 +3334,7 @@ RValue<UInt4> Ctlz(RValue<UInt4> v, bool isZeroUndef)
 
 RValue<UInt> Cttz(RValue<UInt> v, bool isZeroUndef)
 {
+	RR_DEBUG_INFO_UPDATE_LOC();
 	auto func = llvm::Intrinsic::getDeclaration(jit->module.get(), llvm::Intrinsic::cttz, { T(UInt::getType()) });
 	return RValue<UInt>(V(jit->builder->CreateCall2(func, ARGS(
 	                                                          V(v.value),
@@ -3273,6 +3343,7 @@ RValue<UInt> Cttz(RValue<UInt> v, bool isZeroUndef)
 
 RValue<UInt4> Cttz(RValue<UInt4> v, bool isZeroUndef)
 {
+	RR_DEBUG_INFO_UPDATE_LOC();
 	auto func = llvm::Intrinsic::getDeclaration(jit->module.get(), llvm::Intrinsic::cttz, { T(UInt4::getType()) });
 	return RValue<UInt4>(V(jit->builder->CreateCall2(func, ARGS(
 	                                                           V(v.value),
@@ -3314,6 +3385,7 @@ RValue<Long> Ticks()
 
 RValue<Pointer<Byte>> ConstantPointer(void const *ptr)
 {
+	RR_DEBUG_INFO_UPDATE_LOC();
 	// Note: this should work for 32-bit pointers as well because 'inttoptr'
 	// is defined to truncate (and zero extend) if necessary.
 	auto ptrAsInt = ::llvm::ConstantInt::get(::llvm::Type::getInt64Ty(jit->context), reinterpret_cast<uintptr_t>(ptr));
@@ -3322,6 +3394,7 @@ RValue<Pointer<Byte>> ConstantPointer(void const *ptr)
 
 RValue<Pointer<Byte>> ConstantData(void const *data, size_t size)
 {
+	RR_DEBUG_INFO_UPDATE_LOC();
 	auto str = ::std::string(reinterpret_cast<const char *>(data), size);
 	auto ptr = jit->builder->CreateGlobalStringPtr(str);
 	return RValue<Pointer<Byte>>(V(ptr));
@@ -3329,6 +3402,7 @@ RValue<Pointer<Byte>> ConstantData(void const *data, size_t size)
 
 Value *Call(RValue<Pointer<Byte>> fptr, Type *retTy, std::initializer_list<Value *> args, std::initializer_list<Type *> argTys)
 {
+	RR_DEBUG_INFO_UPDATE_LOC();
 	::llvm::SmallVector<::llvm::Type *, 8> paramTys;
 	for(auto ty : argTys) { paramTys.push_back(T(ty)); }
 	auto funcTy = ::llvm::FunctionType::get(T(retTy), paramTys, false);
@@ -3343,6 +3417,7 @@ Value *Call(RValue<Pointer<Byte>> fptr, Type *retTy, std::initializer_list<Value
 
 void Breakpoint()
 {
+	RR_DEBUG_INFO_UPDATE_LOC();
 	llvm::Function *debugtrap = llvm::Intrinsic::getDeclaration(jit->module.get(), llvm::Intrinsic::debugtrap);
 
 	jit->builder->CreateCall(debugtrap);
@@ -3825,182 +3900,13 @@ RValue<Int4> pmovsxwd(RValue<Short8> x)
 #endif  // defined(__i386__) || defined(__x86_64__)
 
 #ifdef ENABLE_RR_PRINT
-// extractAll returns a vector containing the extracted n scalar value of
-// the vector vec.
-static std::vector<Value *> extractAll(Value *vec, int n)
+void VPrintf(const std::vector<Value *> &vals)
 {
-	std::vector<Value *> elements;
-	elements.reserve(n);
-	for(int i = 0; i < n; i++)
-	{
-		auto el = V(jit->builder->CreateExtractElement(V(vec), i));
-		elements.push_back(el);
-	}
-	return elements;
-}
-
-// toInt returns all the integer values in vals extended to a native width
-// integer.
-static std::vector<Value *> toInt(const std::vector<Value *> &vals, bool isSigned)
-{
-	auto intTy = ::llvm::Type::getIntNTy(jit->context, sizeof(int) * 8);  // Natural integer width.
-	std::vector<Value *> elements;
-	elements.reserve(vals.size());
-	for(auto v : vals)
-	{
-		if(isSigned)
-		{
-			elements.push_back(V(jit->builder->CreateSExt(V(v), intTy)));
-		}
-		else
-		{
-			elements.push_back(V(jit->builder->CreateZExt(V(v), intTy)));
-		}
-	}
-	return elements;
-}
-
-// toDouble returns all the float values in vals extended to doubles.
-static std::vector<Value *> toDouble(const std::vector<Value *> &vals)
-{
-	auto doubleTy = ::llvm::Type::getDoubleTy(jit->context);
-	std::vector<Value *> elements;
-	elements.reserve(vals.size());
-	for(auto v : vals)
-	{
-		elements.push_back(V(jit->builder->CreateFPExt(V(v), doubleTy)));
-	}
-	return elements;
-}
-
-std::vector<Value *> PrintValue::Ty<Byte>::val(const RValue<Byte> &v)
-{
-	return toInt({ v.value }, false);
-}
-
-std::vector<Value *> PrintValue::Ty<Byte4>::val(const RValue<Byte4> &v)
-{
-	return toInt(extractAll(v.value, 4), false);
-}
-
-std::vector<Value *> PrintValue::Ty<Int>::val(const RValue<Int> &v)
-{
-	return toInt({ v.value }, true);
-}
-
-std::vector<Value *> PrintValue::Ty<Int2>::val(const RValue<Int2> &v)
-{
-	return toInt(extractAll(v.value, 2), true);
-}
-
-std::vector<Value *> PrintValue::Ty<Int4>::val(const RValue<Int4> &v)
-{
-	return toInt(extractAll(v.value, 4), true);
-}
-
-std::vector<Value *> PrintValue::Ty<UInt>::val(const RValue<UInt> &v)
-{
-	return toInt({ v.value }, false);
-}
-
-std::vector<Value *> PrintValue::Ty<UInt2>::val(const RValue<UInt2> &v)
-{
-	return toInt(extractAll(v.value, 2), false);
-}
-
-std::vector<Value *> PrintValue::Ty<UInt4>::val(const RValue<UInt4> &v)
-{
-	return toInt(extractAll(v.value, 4), false);
-}
-
-std::vector<Value *> PrintValue::Ty<Short>::val(const RValue<Short> &v)
-{
-	return toInt({ v.value }, true);
-}
-
-std::vector<Value *> PrintValue::Ty<Short4>::val(const RValue<Short4> &v)
-{
-	return toInt(extractAll(v.value, 4), true);
-}
-
-std::vector<Value *> PrintValue::Ty<UShort>::val(const RValue<UShort> &v)
-{
-	return toInt({ v.value }, false);
-}
-
-std::vector<Value *> PrintValue::Ty<UShort4>::val(const RValue<UShort4> &v)
-{
-	return toInt(extractAll(v.value, 4), false);
-}
-
-std::vector<Value *> PrintValue::Ty<Float>::val(const RValue<Float> &v)
-{
-	return toDouble({ v.value });
-}
-
-std::vector<Value *> PrintValue::Ty<Float4>::val(const RValue<Float4> &v)
-{
-	return toDouble(extractAll(v.value, 4));
-}
-
-std::vector<Value *> PrintValue::Ty<const char *>::val(const char *v)
-{
-	return { V(jit->builder->CreateGlobalStringPtr(v)) };
-}
-
-void Printv(const char *function, const char *file, int line, const char *fmt, std::initializer_list<PrintValue> args)
-{
-	// LLVM types used below.
 	auto i32Ty = ::llvm::Type::getInt32Ty(jit->context);
-	auto intTy = ::llvm::Type::getIntNTy(jit->context, sizeof(int) * 8);  // Natural integer width.
 	auto i8PtrTy = ::llvm::Type::getInt8PtrTy(jit->context);
 	auto funcTy = ::llvm::FunctionType::get(i32Ty, { i8PtrTy }, true);
-
 	auto func = jit->module->getOrInsertFunction("printf", funcTy);
-
-	// Build the printf format message string.
-	std::string str;
-	if(file != nullptr) { str += (line > 0) ? "%s:%d " : "%s "; }
-	if(function != nullptr) { str += "%s "; }
-	str += fmt;
-
-	// Perform subsitution on all '{n}' bracketed indices in the format
-	// message.
-	int i = 0;
-	for(const PrintValue &arg : args)
-	{
-		str = replace(str, "{" + std::to_string(i++) + "}", arg.format);
-	}
-
-	::llvm::SmallVector<::llvm::Value *, 8> vals;
-
-	// The format message is always the first argument.
-	vals.push_back(jit->builder->CreateGlobalStringPtr(str));
-
-	// Add optional file, line and function info if provided.
-	if(file != nullptr)
-	{
-		vals.push_back(jit->builder->CreateGlobalStringPtr(file));
-		if(line > 0)
-		{
-			vals.push_back(::llvm::ConstantInt::get(intTy, line));
-		}
-	}
-	if(function != nullptr)
-	{
-		vals.push_back(jit->builder->CreateGlobalStringPtr(function));
-	}
-
-	// Add all format arguments.
-	for(const PrintValue &arg : args)
-	{
-		for(auto val : arg.values)
-		{
-			vals.push_back(V(val));
-		}
-	}
-
-	jit->builder->CreateCall(func, vals);
+	jit->builder->CreateCall(func, V(vals));
 }
 #endif  // ENABLE_RR_PRINT
 

@@ -120,6 +120,7 @@ option_if_not_defined(SWIFTSHADER_WARNINGS_AS_ERRORS "Treat all warnings as erro
 option_if_not_defined(SWIFTSHADER_DCHECK_ALWAYS_ON "Check validation macros even in release builds" 0)
 option_if_not_defined(REACTOR_EMIT_DEBUG_INFO "Emit debug info for JIT functions" 0)
 option_if_not_defined(REACTOR_EMIT_PRINT_LOCATION "Emit printing of location info for JIT functions" 0)
+option_if_not_defined(REACTOR_ENABLE_PRINT "Enable RR_PRINT macros" 0)
 option_if_not_defined(REACTOR_VERIFY_LLVM_IR "Check reactor-generated LLVM IR is valid even in release builds" 0)
 option_if_not_defined(SWIFTSHADER_LESS_DEBUG_INFO "Generate less debug info to reduce file size" 0)
 option_if_not_defined(SWIFTSHADER_ENABLE_VULKAN_DEBUGGER "Enable vulkan debugger support" 0)
@@ -292,8 +293,9 @@ macro(set_shared_library_export_map TARGET DIR)
         set_property(TARGET ${TARGET} APPEND_STRING PROPERTY LINK_FLAGS " -Wl,--version-script=${DIR}/${TARGET}.lds")
         set_property(TARGET ${TARGET} APPEND_STRING PROPERTY LINK_DEPENDS "${DIR}/${TARGET}.lds;")
 
-        # Don't allow symbols to be overridden by another module.
-        set_property(TARGET ${TARGET} APPEND_STRING PROPERTY COMPILE_FLAGS " -fvisibility=protected")
+        # -Bsymbolic binds symbol references to their global definitions within
+        # a shared object, thereby preventing symbol preemption.
+        set_property(TARGET ${TARGET} APPEND_STRING PROPERTY COMPILE_FLAGS "  -Wl,-Bsymbolic")
 
         if(ARCH STREQUAL "mipsel" OR ARCH STREQUAL "mips64el")
           # MIPS supports sysv hash-style only.
@@ -328,12 +330,12 @@ set(OPENGL_DIR ${SOURCE_DIR}/OpenGL)
 set(OPENGL_COMPILER_DIR ${OPENGL_DIR}/compiler)
 set(VULKAN_DIR ${SOURCE_DIR}/Vulkan)
 set(THIRD_PARTY_DIR ${CMAKE_CURRENT_SOURCE_DIR}/third_party)
+set(ASTC_DIR ${THIRD_PARTY_DIR}/astc-encoder)
 set(LLVM_DIR ${THIRD_PARTY_DIR}/llvm-7.0/llvm)
 set(LLVM_CONFIG_DIR ${THIRD_PARTY_DIR}/llvm-7.0/configs)
 set(LIBBACKTRACE_DIR ${THIRD_PARTY_DIR}/libbacktrace/src)
 set(LIBBACKTRACE_CONFIG_DIR ${THIRD_PARTY_DIR}/libbacktrace/config)
 set(LIBBACKTRACE_INCLUDE_DIR ${THIRD_PARTY_DIR}/libbacktrace/src)
-set(MARL_INCLUDE_DIR ${THIRD_PARTY_DIR}/marl/include)
 set(CPPDAP_DIR ${THIRD_PARTY_DIR}/cppdap)
 set(CPPDAP_INCLUDE_DIR ${CPPDAP_DIR}/include)
 set(JSON_INCLUDE_DIR ${THIRD_PARTY_DIR}/json/include)
@@ -475,15 +477,19 @@ else()
         set_cpp_flag("-mtune=generic")
     endif()
     if(ARCH STREQUAL "mipsel")
+        set_cpp_flag("-EL")
         set_cpp_flag("-march=mips32r2")
         set_cpp_flag("-fPIC")
         set_cpp_flag("-mhard-float")
         set_cpp_flag("-mfp32")
+        set_cpp_flag("-mxgot")
     endif()
     if(ARCH STREQUAL "mips64el")
+        set_cpp_flag("-EL")
         set_cpp_flag("-march=mips64r2")
         set_cpp_flag("-mabi=64")
         set_cpp_flag("-fPIC")
+        set_cpp_flag("-mxgot")
     endif()
 
     if(SWIFTSHADER_LESS_DEBUG_INFO)
@@ -540,14 +546,19 @@ else()
 endif()
 
 if(REACTOR_EMIT_PRINT_LOCATION)
-    # This feature depends on REACTOR_EMIT_DEBUG_INFO, so enable it
+    # This feature depends on REACTOR_EMIT_DEBUG_INFO and REACTOR_ENABLE_PRINT
     set(REACTOR_EMIT_DEBUG_INFO "On")
+    set(REACTOR_ENABLE_PRINT "On")
     list(APPEND SWIFTSHADER_COMPILE_OPTIONS "-DENABLE_RR_EMIT_PRINT_LOCATION")
 endif()
 
 if(REACTOR_EMIT_DEBUG_INFO)
     message(WARNING "REACTOR_EMIT_DEBUG_INFO is enabled. This will likely affect performance.")
     list(APPEND SWIFTSHADER_COMPILE_OPTIONS "-DENABLE_RR_DEBUG_INFO")
+endif()
+
+if(REACTOR_ENABLE_PRINT)
+    list(APPEND SWIFTSHADER_COMPILE_OPTIONS "-DENABLE_RR_PRINT")
 endif()
 
 if(REACTOR_VERIFY_LLVM_IR)
@@ -1625,6 +1636,8 @@ if(${REACTOR_BACKEND} STREQUAL "Subzero")
         ${SOURCE_DIR}/Reactor/Print.hpp
         ${SOURCE_DIR}/Reactor/Reactor.cpp
         ${SOURCE_DIR}/Reactor/Reactor.hpp
+        ${SOURCE_DIR}/Reactor/ReactorDebugInfo.cpp
+        ${SOURCE_DIR}/Reactor/ReactorDebugInfo.hpp
         ${SOURCE_DIR}/Reactor/Routine.hpp
         ${SOURCE_DIR}/Reactor/SubzeroReactor.cpp
     )
@@ -1686,7 +1699,6 @@ set(OPENGL_INCLUDE_DIR
 
 set(VULKAN_INCLUDE_DIR
     ${COMMON_INCLUDE_DIR}
-    ${MARL_INCLUDE_DIR}
     ${CPPDAP_INCLUDE_DIR}
 )
 
@@ -1766,6 +1778,8 @@ set(REACTOR_LLVM_LIST
     ${SOURCE_DIR}/Reactor/Print.hpp
     ${SOURCE_DIR}/Reactor/Reactor.cpp
     ${SOURCE_DIR}/Reactor/Reactor.hpp
+    ${SOURCE_DIR}/Reactor/ReactorDebugInfo.cpp
+    ${SOURCE_DIR}/Reactor/ReactorDebugInfo.hpp
     ${SOURCE_DIR}/Reactor/Routine.hpp
 )
 
@@ -1852,6 +1866,8 @@ file(GLOB VULKAN_LIST
     ${SOURCE_DIR}/WSI/VkSurfaceKHR.hpp
     ${SOURCE_DIR}/WSI/VkSwapchainKHR.cpp
     ${SOURCE_DIR}/WSI/VkSwapchainKHR.hpp
+    ${ASTC_DIR}/Source/*.cpp
+    ${ASTC_DIR}/Source/*.h
     ${CMAKE_CURRENT_SOURCE_DIR}/include/vulkan/*.h}
 )
 
@@ -1988,43 +2004,42 @@ if(${REACTOR_BACKEND} STREQUAL "LLVM")
         COMPILE_OPTIONS "${SWIFTSHADER_COMPILE_OPTIONS}"
     )
     target_link_libraries(ReactorLLVM llvm ${OS_LIBS})
-
-    if(REACTOR_EMIT_DEBUG_INFO)
-        if(WIN32)
-            # Boost stacktrace uses COM on Windows.
-            # On Windows, cache COM instances in TLS for performance.
-            target_compile_definitions(ReactorLLVM PRIVATE BOOST_STACKTRACE_USE_WINDBG_CACHED)
-        else()
-            # Boost stacktrace uses libbacktrace
-            target_compile_definitions(ReactorLLVM PRIVATE BOOST_STACKTRACE_USE_BACKTRACE)
-
-            # Boost stacktrace uses exceptions, so force enable it
-            set_cpp_flag("-fexceptions")
-
-            add_library(Libbacktrace STATIC ${LIBBACKTRACE_LIST})
-            set_target_properties(Libbacktrace PROPERTIES
-                INCLUDE_DIRECTORIES "${LIBBACKTRACE_INCLUDE_DIR}"
-                POSITION_INDEPENDENT_CODE 1
-                FOLDER "Core"
-            )
-            target_link_libraries(Libbacktrace ${OS_LIBS})
-            target_link_libraries(ReactorLLVM Libbacktrace)
-        endif()
-
-        # Download boost and use it
-        DownloadBoost()
-        set(BOOST_INCLUDEDIR ${BOOST_THIRD_PARTY_DIR})
-        find_package(Boost REQUIRED)
-        target_link_libraries(ReactorLLVM Boost::boost)
-
-    endif(REACTOR_EMIT_DEBUG_INFO)
-
     set(Reactor ReactorLLVM)
 elseif(${REACTOR_BACKEND} STREQUAL "Subzero")
     set(Reactor ReactorSubzero)
 else()
     message(FATAL_ERROR "REACTOR_BACKEND must be 'LLVM' or 'Subzero'")
 endif()
+
+if(REACTOR_EMIT_DEBUG_INFO)
+    if(WIN32)
+        # Boost stacktrace uses COM on Windows.
+        # On Windows, cache COM instances in TLS for performance.
+        target_compile_definitions(${Reactor} PRIVATE BOOST_STACKTRACE_USE_WINDBG_CACHED)
+    else()
+        # Boost stacktrace uses libbacktrace
+        target_compile_definitions(${Reactor} PRIVATE BOOST_STACKTRACE_USE_BACKTRACE)
+
+        # Boost stacktrace uses exceptions, so force enable it
+        set_cpp_flag("-fexceptions")
+
+        add_library(Libbacktrace STATIC ${LIBBACKTRACE_LIST})
+        set_target_properties(Libbacktrace PROPERTIES
+            INCLUDE_DIRECTORIES "${LIBBACKTRACE_INCLUDE_DIR}"
+            POSITION_INDEPENDENT_CODE 1
+            FOLDER "Core"
+        )
+        target_link_libraries(Libbacktrace ${OS_LIBS})
+        target_link_libraries(${Reactor} Libbacktrace)
+    endif()
+
+    # Download boost and use it
+    DownloadBoost()
+    set(BOOST_INCLUDEDIR ${BOOST_THIRD_PARTY_DIR})
+    find_package(Boost REQUIRED)
+    target_link_libraries(${Reactor} Boost::boost)
+
+endif(REACTOR_EMIT_DEBUG_INFO)
 
 add_library(GLCompiler STATIC ${OPENGL_COMPILER_LIST})
 set_target_properties(GLCompiler PROPERTIES
