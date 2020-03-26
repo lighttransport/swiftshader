@@ -18,6 +18,7 @@
 
 #include "gtest/gtest.h"
 
+#include <array>
 #include <cmath>
 #include <thread>
 #include <tuple>
@@ -153,6 +154,38 @@ std::vector<std::string> split(const std::string &s)
 	}
 	return result;
 }
+
+static const std::vector<int> fibonacci = {
+	0,
+	1,
+	1,
+	2,
+	3,
+	5,
+	8,
+	13,
+	21,
+	34,
+	55,
+	89,
+	144,
+	233,
+	377,
+	610,
+	987,
+	1597,
+	2584,
+	4181,
+	6765,
+	10946,
+	17711,
+	28657,
+	46368,
+	75025,
+	121393,
+	196418,
+	317811,
+};
 
 TEST(ReactorUnitTests, PrintPrimitiveTypes)
 {
@@ -1501,6 +1534,53 @@ TEST(ReactorUnitTests, Args_GreaterThan5Mixed)
 	}
 }
 
+// This test was written because on Windows with Subzero, we would get a crash when executing a function
+// with a large number of local variables. The problem was that on Windows, 4K pages are allocated as
+// needed for the stack whenever an access is made in a "guard page", at which point the page is committed,
+// and the next 4K page becomes the guard page. If a stack access is made that's beyond the guard page,
+// a regular page fault occurs. To fix this, Subzero (and any compiler) now emits a call to __chkstk with
+// the stack size in EAX, so that it can probe the stack in 4K increments up to that size, committing the
+// required pages. See https://docs.microsoft.com/en-us/windows/win32/devnotes/-win32-chkstk.
+TEST(ReactorUnitTests, LargeStack)
+{
+#if defined(_WIN32)
+	// An empirically large enough value to access outside the guard pages
+	constexpr int ArrayByteSize = 24 * 1024;
+	constexpr int ArraySize = ArrayByteSize / sizeof(int32_t);
+
+	FunctionT<void(int32_t * v)> function;
+	{
+		// Allocate a stack array large enough that writing to the first element will reach beyond
+		// the guard page.
+		Array<Int, ArraySize> largeStackArray;
+		for(int i = 0; i < ArraySize; ++i)
+		{
+			largeStackArray[i] = i;
+		}
+
+		Pointer<Int> in = function.Arg<0>();
+		for(int i = 0; i < ArraySize; ++i)
+		{
+			in[i] = largeStackArray[i];
+		}
+	}
+
+	auto routine = function("one");
+	std::array<int32_t, ArraySize> v;
+
+	// Run this in a thread, so that we get the default reserved stack size (8K on Win64).
+	std::thread t([&] {
+		routine(v.data());
+	});
+	t.join();
+
+	for(int i = 0; i < ArraySize; ++i)
+	{
+		EXPECT_EQ(v[i], i);
+	}
+#endif
+}
+
 TEST(ReactorUnitTests, Call)
 {
 	struct Class
@@ -1617,6 +1697,35 @@ TEST(ReactorUnitTests, CallImplicitCast)
 	Class c;
 	routine(&c, "hello world");
 	EXPECT_EQ(c.str, "hello world");
+}
+
+TEST(ReactorUnitTests, CallBoolReturnFunction)
+{
+	struct Class
+	{
+		static bool IsEven(int a)
+		{
+			return a % 2 == 0;
+		}
+	};
+
+	FunctionT<int(int)> function;
+	{
+		Int a = function.Arg<0>();
+		Bool res = Call(Class::IsEven, a);
+		If(res)
+		{
+			Return(1);
+		}
+		Return(0);
+	}
+
+	auto routine = function("one");
+
+	for(int i = 0; i < 10; ++i)
+	{
+		EXPECT_EQ(routine(i), i % 2 == 0);
+	}
 }
 
 TEST(ReactorUnitTests, Call_Args4)
@@ -1993,6 +2102,30 @@ TYPED_TEST(GEPTest, PtrOffsets)
 	}
 }
 
+TEST(ReactorUnitTests, Fibonacci)
+{
+	FunctionT<int(int)> function;
+	{
+		Int n = function.Arg<0>();
+		Int current = 0;
+		Int next = 1;
+		For(Int i = 0, i < n, i++)
+		{
+			auto tmp = current + next;
+			current = next;
+			next = tmp;
+		}
+		Return(current);
+	}
+
+	auto routine = function("one");
+
+	for(size_t i = 0; i < fibonacci.size(); i++)
+	{
+		EXPECT_EQ(routine(i), fibonacci[i]);
+	}
+}
+
 TEST(ReactorUnitTests, Coroutines_Fibonacci)
 {
 	if(!rr::Caps.CoroutinesSupported)
@@ -2018,45 +2151,11 @@ TEST(ReactorUnitTests, Coroutines_Fibonacci)
 
 	auto coroutine = function();
 
-	int32_t expected[] = {
-		0,
-		1,
-		1,
-		2,
-		3,
-		5,
-		8,
-		13,
-		21,
-		34,
-		55,
-		89,
-		144,
-		233,
-		377,
-		610,
-		987,
-		1597,
-		2584,
-		4181,
-		6765,
-		10946,
-		17711,
-		28657,
-		46368,
-		75025,
-		121393,
-		196418,
-		317811,
-	};
-
-	auto count = sizeof(expected) / sizeof(expected[0]);
-
-	for(size_t i = 0; i < count; i++)
+	for(size_t i = 0; i < fibonacci.size(); i++)
 	{
 		int out = 0;
 		EXPECT_EQ(coroutine->await(out), true);
-		EXPECT_EQ(out, expected[i]);
+		EXPECT_EQ(out, fibonacci[i]);
 	}
 }
 
@@ -2185,40 +2284,6 @@ TEST(ReactorUnitTests, Coroutines_Parallel)
 	// Must call on same thread that creates the coroutine
 	function.finalize();
 
-	constexpr int32_t expected[] = {
-		0,
-		1,
-		1,
-		2,
-		3,
-		5,
-		8,
-		13,
-		21,
-		34,
-		55,
-		89,
-		144,
-		233,
-		377,
-		610,
-		987,
-		1597,
-		2584,
-		4181,
-		6765,
-		10946,
-		17711,
-		28657,
-		46368,
-		75025,
-		121393,
-		196418,
-		317811,
-	};
-
-	constexpr auto count = sizeof(expected) / sizeof(expected[0]);
-
 	std::vector<std::thread> threads;
 	const size_t numThreads = 100;
 
@@ -2227,11 +2292,11 @@ TEST(ReactorUnitTests, Coroutines_Parallel)
 		threads.emplace_back([&] {
 			auto coroutine = function();
 
-			for(size_t i = 0; i < count; i++)
+			for(size_t i = 0; i < fibonacci.size(); i++)
 			{
 				int out = 0;
 				EXPECT_EQ(coroutine->await(out), true);
-				EXPECT_EQ(out, expected[i]);
+				EXPECT_EQ(out, fibonacci[i]);
 			}
 		});
 	}

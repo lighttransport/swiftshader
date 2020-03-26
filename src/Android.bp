@@ -555,6 +555,12 @@ cc_defaults {
         "-Wno-non-virtual-dtor",
     ],
 
+    ldflags: [
+        // -Bsymbolic binds symbol references to their global definitions within
+        // a shared object, thereby preventing symbol preemption.
+        "-Wl,-Bsymbolic",
+    ],
+
     local_include_dirs: [ "Vulkan" ],
 
     version_script: "Vulkan/android_vk_swiftshader.lds",
@@ -583,19 +589,41 @@ cc_defaults {
     },
 }
 
+cc_library_static {
+    name: "swiftshader_debug",
+
+    vendor_available: true,
+
+    cflags: [
+        "-DLOG_TAG=\"swiftshader\"",
+    ],
+
+    srcs: [
+        "System/Debug.cpp",
+    ],
+
+    export_include_dirs: [
+        ".",
+    ],
+
+    shared_libs: [
+        "liblog",
+    ],
+}
+
 cc_defaults {
     name: "libvk_swiftshader_common_defaults",
 
     cflags: [
         "-DLOG_TAG=\"swiftshader\"",
         "-DSWIFTSHADER_EXTERNAL_MEMORY_ANDROID_HARDWARE_BUFFER",
+        "-DSWIFTSHADER_ENABLE_ASTC",  // TODO(b/150130101)
     ],
 
     srcs: [
         "System/Build.cpp",
         "System/Configurator.cpp",
         "System/CPUID.cpp",
-        "System/Debug.cpp",
         "System/GrallocAndroid.cpp",
         "System/Half.cpp",
         "System/Linux/MemFd.cpp",
@@ -609,6 +637,8 @@ cc_defaults {
     ],
 
     static_libs: [
+        "swiftshader_astc",
+        "swiftshader_debug",
         "swiftshader_marl",
         "swiftshader_spirv-tools",
     ],

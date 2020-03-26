@@ -33,6 +33,8 @@
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/raw_os_ostream.h"
 
+#include "marl/event.h"
+
 #if __has_feature(memory_sanitizer)
 #	include <sanitizer/msan_interface.h>
 #endif
@@ -56,37 +58,6 @@
 // These functions only accept and return Subzero (Ice) types, and do not access any globals.
 namespace {
 namespace sz {
-void replaceEntryNode(Ice::Cfg *function, Ice::CfgNode *newEntryNode)
-{
-	ASSERT_MSG(function->getEntryNode() != nullptr, "Function should have an entry node");
-
-	if(function->getEntryNode() == newEntryNode)
-	{
-		return;
-	}
-
-	// Make this the new entry node
-	function->setEntryNode(newEntryNode);
-
-	// Reorder nodes so that new entry block comes first. This is required
-	// by Cfg::renumberInstructions, which expects the first node in the list
-	// to be the entry node.
-	{
-		auto nodes = function->getNodes();
-
-		// TODO(amaiorano): Fast path if newEntryNode is last? Can avoid linear search.
-
-		auto iter = std::find(nodes.begin(), nodes.end(), newEntryNode);
-		ASSERT_MSG(iter != nodes.end(), "New node should be in the function's node list");
-
-		nodes.erase(iter);
-		nodes.insert(nodes.begin(), newEntryNode);
-
-		// swapNodes replaces its nodes with the input one, and renumbers them,
-		// so our new entry node will be 0, and the previous will be 1.
-		function->swapNodes(nodes);
-	}
-}
 
 Ice::Cfg *createFunction(Ice::GlobalContext *context, Ice::Type returnType, const std::vector<Ice::Type> &paramTypes)
 {
@@ -144,38 +115,59 @@ Ice::Constant *getConstantPointer(Ice::GlobalContext *context, void const *ptr)
 	}
 }
 
-// Wrapper for calls on C functions with Ice types
-Ice::Variable *Call(Ice::Cfg *function, Ice::CfgNode *basicBlock, Ice::Type retTy, void const *fptr, const std::vector<Ice::Operand *> &iceArgs)
-{
-	// Subzero doesn't support boolean return values. Replace with an i32.
-	if(retTy == Ice::IceType_i1)
-	{
-		retTy = Ice::IceType_i32;
-	}
+// TODO(amaiorano): remove this prototype once these are moved to separate header/cpp
+Ice::Variable *createTruncate(Ice::Cfg *function, Ice::CfgNode *basicBlock, Ice::Operand *from, Ice::Type toType);
 
+// Wrapper for calls on C functions with Ice types
+Ice::Variable *Call(Ice::Cfg *function, Ice::CfgNode *basicBlock, Ice::Type retTy, Ice::Operand *callTarget, const std::vector<Ice::Operand *> &iceArgs, bool isVariadic)
+{
 	Ice::Variable *ret = nullptr;
-	if(retTy != Ice::IceType_void)
+
+	// Subzero doesn't support boolean return values. Replace with an i32 temporarily,
+	// then truncate result to bool.
+	// TODO(b/151158858): Add support to Subzero's InstCall for bool-returning functions
+	const bool returningBool = (retTy == Ice::IceType_i1);
+	if(returningBool)
+	{
+		ret = function->makeVariable(Ice::IceType_i32);
+	}
+	else if(retTy != Ice::IceType_void)
 	{
 		ret = function->makeVariable(retTy);
 	}
 
-	auto call = Ice::InstCall::create(function, iceArgs.size(), ret, getConstantPointer(function->getContext(), fptr), false);
+	auto call = Ice::InstCall::create(function, iceArgs.size(), ret, callTarget, false, false, isVariadic);
 	for(auto arg : iceArgs)
 	{
 		call->addArg(arg);
 	}
 
 	basicBlock->appendInst(call);
+
+	if(returningBool)
+	{
+		// Truncate result to bool so that if any (lsb) bits were set, result will be true
+		ret = createTruncate(function, basicBlock, ret, Ice::IceType_i1);
+	}
+
 	return ret;
+}
+
+Ice::Variable *Call(Ice::Cfg *function, Ice::CfgNode *basicBlock, Ice::Type retTy, void const *fptr, const std::vector<Ice::Operand *> &iceArgs, bool isVariadic)
+{
+	Ice::Operand *callTarget = getConstantPointer(function->getContext(), fptr);
+	return Call(function, basicBlock, retTy, callTarget, iceArgs, isVariadic);
 }
 
 // Wrapper for calls on C functions with Ice types
 template<typename Return, typename... CArgs, typename... RArgs>
 Ice::Variable *Call(Ice::Cfg *function, Ice::CfgNode *basicBlock, Return(fptr)(CArgs...), RArgs &&... args)
 {
+	static_assert(sizeof...(CArgs) == sizeof...(RArgs), "Expected number of args don't match");
+
 	Ice::Type retTy = T(rr::CToReactorT<Return>::getType());
 	std::vector<Ice::Operand *> iceArgs{ std::forward<RArgs>(args)... };
-	return Call(function, basicBlock, retTy, reinterpret_cast<void const *>(fptr), iceArgs);
+	return Call(function, basicBlock, retTy, reinterpret_cast<void const *>(fptr), iceArgs, false);
 }
 
 // Returns a non-const variable copy of const v
@@ -185,6 +177,14 @@ Ice::Variable *createUnconstCast(Ice::Cfg *function, Ice::CfgNode *basicBlock, I
 	Ice::InstCast *cast = Ice::InstCast::create(function, Ice::InstCast::Bitcast, result, v);
 	basicBlock->appendInst(cast);
 	return result;
+}
+
+Ice::Variable *createTruncate(Ice::Cfg *function, Ice::CfgNode *basicBlock, Ice::Operand *from, Ice::Type toType)
+{
+	Ice::Variable *to = function->makeVariable(toType);
+	Ice::InstCast *cast = Ice::InstCast::create(function, Ice::InstCast::Trunc, to, from);
+	basicBlock->appendInst(cast);
+	return to;
 }
 
 Ice::Variable *createLoad(Ice::Cfg *function, Ice::CfgNode *basicBlock, Ice::Operand *ptr, Ice::Type type, unsigned int align)
@@ -227,6 +227,8 @@ rr::Config &defaultConfig()
 
 Ice::GlobalContext *context = nullptr;
 Ice::Cfg *function = nullptr;
+Ice::CfgNode *entryBlock = nullptr;
+Ice::CfgNode *basicBlockTop = nullptr;
 Ice::CfgNode *basicBlock = nullptr;
 Ice::CfgLocalAllocatorScope *allocator = nullptr;
 rr::ELFMemoryStreamer *routine = nullptr;
@@ -239,7 +241,16 @@ Ice::Fdstream *out = nullptr;
 // Coroutine globals
 rr::Type *coroYieldType = nullptr;
 std::shared_ptr<rr::CoroutineGenerator> coroGen;
+marl::Scheduler &getOrCreateScheduler()
+{
+	static auto scheduler = [] {
+		auto s = std::make_unique<marl::Scheduler>();
+		s->setWorkerThreadCount(8);
+		return s;
+	}();
 
+	return *scheduler;
+}
 }  // Anonymous namespace
 
 namespace {
@@ -353,11 +364,7 @@ std::string BackendName()
 }
 
 const Capabilities Caps = {
-#if defined(_WIN32)
 	true,  // CoroutinesSupported
-#else
-	false,  // CoroutinesSupported
-#endif
 };
 
 enum EmulatedType
@@ -455,12 +462,17 @@ static size_t typeSize(Type *type)
 	return Ice::typeWidthInBytes(T(type));
 }
 
-static void createRetVoidIfNoRet()
+static void finalizeFunction()
 {
+	// Create a return if none was added
 	if(::basicBlock->getInsts().empty() || ::basicBlock->getInsts().back().getKind() != Ice::Inst::Ret)
 	{
 		Nucleus::createRetVoid();
 	}
+
+	// Connect the entry block to the top of the initial basic block
+	auto br = Ice::InstBr::create(::function, ::basicBlockTop);
+	::entryBlock->appendInst(br);
 }
 
 using ElfHeader = std::conditional<sizeof(void *) == 8, Elf64_Ehdr, Elf32_Ehdr>::type;
@@ -622,13 +634,23 @@ static void *relocateSymbol(const ElfHeader *elfHeader, const Elf64_Rela &reloca
 	return symbolValue;
 }
 
-void *loadImage(uint8_t *const elfImage, size_t &codeSize, const char *functionName = nullptr)
+struct EntryPoint
 {
+	const void *entry;
+	size_t codeSize = 0;
+};
+
+std::vector<EntryPoint> loadImage(uint8_t *const elfImage, const std::vector<const char *> &functionNames)
+{
+	ASSERT(functionNames.size() > 0);
+	std::vector<EntryPoint> entryPoints(functionNames.size());
+
 	ElfHeader *elfHeader = (ElfHeader *)elfImage;
 
+	// TODO: assert?
 	if(!elfHeader->checkMagic())
 	{
-		return nullptr;
+		return {};
 	}
 
 	// Expect ELF bitness to match platform
@@ -648,7 +670,6 @@ void *loadImage(uint8_t *const elfImage, size_t &codeSize, const char *functionN
 #endif
 
 	SectionHeader *sectionHeader = (SectionHeader *)(elfImage + elfHeader->e_shoff);
-	void *entry = nullptr;
 
 	for(int i = 0; i < elfHeader->e_shnum; i++)
 	{
@@ -656,17 +677,25 @@ void *loadImage(uint8_t *const elfImage, size_t &codeSize, const char *functionN
 		{
 			if(sectionHeader[i].sh_flags & SHF_EXECINSTR)
 			{
-				auto getCurrSectionName = [&]() {
+				auto findSectionNameEntryIndex = [&]() -> size_t {
 					auto sectionNameOffset = sectionHeader[elfHeader->e_shstrndx].sh_offset + sectionHeader[i].sh_name;
-					return reinterpret_cast<const char *>(elfImage + sectionNameOffset);
-				};
-				if(functionName && strstr(getCurrSectionName(), functionName) == nullptr)
-				{
-					continue;
-				}
+					const char *sectionName = reinterpret_cast<const char *>(elfImage + sectionNameOffset);
 
-				entry = elfImage + sectionHeader[i].sh_offset;
-				codeSize = sectionHeader[i].sh_size;
+					for(size_t j = 0; j < functionNames.size(); ++j)
+					{
+						if(strstr(sectionName, functionNames[j]) != nullptr)
+						{
+							return j;
+						}
+					}
+
+					UNREACHABLE("Failed to find executable section that matches input function names");
+					return static_cast<size_t>(-1);
+				};
+
+				size_t index = findSectionNameEntryIndex();
+				entryPoints[index].entry = elfImage + sectionHeader[i].sh_offset;
+				entryPoints[index].codeSize = sectionHeader[i].sh_size;
 			}
 		}
 		else if(sectionHeader[i].sh_type == SHT_REL)
@@ -691,7 +720,7 @@ void *loadImage(uint8_t *const elfImage, size_t &codeSize, const char *functionN
 		}
 	}
 
-	return entry;
+	return entryPoints;
 }
 
 template<typename T>
@@ -762,18 +791,20 @@ public:
 
 	void seek(uint64_t Off) override { position = Off; }
 
-	const void *getEntryByName(const char *name)
+	std::vector<EntryPoint> loadImageAndGetEntryPoints(const std::vector<const char *> &functionNames)
 	{
-		size_t codeSize = 0;
-		const void *entry = loadImage(&buffer[0], codeSize, name);
+		auto entryPoints = loadImage(&buffer[0], functionNames);
 
 #if defined(_WIN32)
 		FlushInstructionCache(GetCurrentProcess(), NULL, 0);
 #else
-		__builtin___clear_cache((char *)entry, (char *)entry + codeSize);
+		for(auto &entryPoint : entryPoints)
+		{
+			__builtin___clear_cache((char *)entryPoint.entry, (char *)entryPoint.entry + entryPoint.codeSize);
+		}
 #endif
 
-		return entry;
+		return entryPoints;
 	}
 
 	void finalize()
@@ -818,7 +849,7 @@ private:
 #ifdef ENABLE_RR_PRINT
 void VPrintf(const std::vector<Value *> &vals)
 {
-	sz::Call(::function, ::basicBlock, Ice::IceType_i32, reinterpret_cast<const void *>(::printf), V(vals));
+	sz::Call(::function, ::basicBlock, Ice::IceType_i32, reinterpret_cast<const void *>(::printf), V(vals), true);
 }
 #endif  // ENABLE_RR_PRINT
 
@@ -892,7 +923,9 @@ Nucleus::~Nucleus()
 	delete ::out;
 	::out = nullptr;
 
+	::entryBlock = nullptr;
 	::basicBlock = nullptr;
+	::basicBlockTop = nullptr;
 
 	::codegenMutex.unlock();
 }
@@ -992,10 +1025,11 @@ static std::shared_ptr<Routine> acquireRoutine(Ice::Cfg *const (&functions)[Coun
 	objectWriter->writeNonUserSections();
 
 	// Done compiling functions, get entry pointers to each of them
-	for(size_t i = 0; i < Count; ++i)
+	auto entryPoints = ::routine->loadImageAndGetEntryPoints({ names, names + Count });
+	ASSERT(entryPoints.size() == Count);
+	for(size_t i = 0; i < entryPoints.size(); ++i)
 	{
-		const void *entry = ::routine->getEntryByName(names[i]);
-		::routine->setEntry(i, entry);
+		::routine->setEntry(i, entryPoints[i].entry);
 	}
 
 	::routine->finalize();
@@ -1008,7 +1042,7 @@ static std::shared_ptr<Routine> acquireRoutine(Ice::Cfg *const (&functions)[Coun
 
 std::shared_ptr<Routine> Nucleus::acquireRoutine(const char *name, const Config::Edit &cfgEdit /* = Config::Edit::None */)
 {
-	createRetVoidIfNoRet();
+	finalizeFunction();
 	return rr::acquireRoutine({ ::function }, { name }, cfgEdit);
 }
 
@@ -1049,7 +1083,9 @@ void Nucleus::createFunction(Type *returnType, const std::vector<Type *> &paramT
 {
 	ASSERT(::function == nullptr);
 	ASSERT(::allocator == nullptr);
+	ASSERT(::entryBlock == nullptr);
 	ASSERT(::basicBlock == nullptr);
+	ASSERT(::basicBlockTop == nullptr);
 
 	::function = sz::createFunction(::context, T(returnType), T(paramTypes));
 
@@ -1059,7 +1095,9 @@ void Nucleus::createFunction(Type *returnType, const std::vector<Type *> &paramT
 	// TODO: Get rid of this as a global, and create scoped allocs in every Nucleus function instead.
 	::allocator = new Ice::CfgLocalAllocatorScope(::function);
 
-	::basicBlock = ::function->getEntryNode();
+	::entryBlock = ::function->getEntryNode();
+	::basicBlock = ::function->makeNode();
+	::basicBlockTop = ::basicBlock;
 }
 
 Value *Nucleus::getArgument(unsigned int index)
@@ -1286,12 +1324,31 @@ Value *Nucleus::createNot(Value *v)
 	}
 }
 
+static void validateAtomicAndMemoryOrderArgs(bool atomic, std::memory_order memoryOrder)
+{
+#if defined(__i386__) || defined(__x86_64__)
+	// We're good, atomics and strictest memory order (except seq_cst) are guaranteed.
+	// Note that sequential memory ordering could be guaranteed by using x86's LOCK prefix.
+	// Note also that relaxed memory order could be implemented using MOVNTPS and friends.
+#else
+	if(atomic)
+	{
+		UNIMPLEMENTED("b/150475088 Atomic load/store not implemented for current platform");
+	}
+	if(memoryOrder != std::memory_order_relaxed)
+	{
+		UNIMPLEMENTED("b/150475088 Memory order other than memory_order_relaxed not implemented for current platform");
+	}
+#endif
+
+	// Vulkan doesn't allow sequential memory order
+	ASSERT(memoryOrder != std::memory_order_seq_cst);
+}
+
 Value *Nucleus::createLoad(Value *ptr, Type *type, bool isVolatile, unsigned int align, bool atomic, std::memory_order memoryOrder)
 {
 	RR_DEBUG_INFO_UPDATE_LOC();
-
-	ASSERT(!atomic);                                   // Unimplemented
-	ASSERT(memoryOrder == std::memory_order_relaxed);  // Unimplemented
+	validateAtomicAndMemoryOrderArgs(atomic, memoryOrder);
 
 	int valueType = (int)reinterpret_cast<intptr_t>(type);
 	Ice::Variable *result = nullptr;
@@ -1314,6 +1371,7 @@ Value *Nucleus::createLoad(Value *ptr, Type *type, bool isVolatile, unsigned int
 			}
 			else if(typeSize(type) == 8)
 			{
+				ASSERT_MSG(!atomic, "Emulated 64-bit loads are not atomic");
 				auto pointer = RValue<Pointer<Byte>>(ptr);
 				Int x = *Pointer<Int>(pointer);
 				Int y = *Pointer<Int>(pointer + 4);
@@ -1352,12 +1410,10 @@ Value *Nucleus::createLoad(Value *ptr, Type *type, bool isVolatile, unsigned int
 Value *Nucleus::createStore(Value *value, Value *ptr, Type *type, bool isVolatile, unsigned int align, bool atomic, std::memory_order memoryOrder)
 {
 	RR_DEBUG_INFO_UPDATE_LOC();
-
-	ASSERT(!atomic);                                   // Unimplemented
-	ASSERT(memoryOrder == std::memory_order_relaxed);  // Unimplemented
+	validateAtomicAndMemoryOrderArgs(atomic, memoryOrder);
 
 #if __has_feature(memory_sanitizer)
-	    // Mark all (non-stack) memory writes as initialized by calling __msan_unpoison
+	// Mark all (non-stack) memory writes as initialized by calling __msan_unpoison
 	if(align != 0)
 	{
 		auto call = Ice::InstCall::create(::function, 2, nullptr, ::context->getConstantInt64(reinterpret_cast<intptr_t>(__msan_unpoison)), false);
@@ -1387,6 +1443,7 @@ Value *Nucleus::createStore(Value *value, Value *ptr, Type *type, bool isVolatil
 			}
 			else if(typeSize(type) == 8)
 			{
+				ASSERT_MSG(!atomic, "Emulated 64-bit stores are not atomic");
 				Ice::Variable *vector = ::function->makeVariable(Ice::IceType_v4i32);
 				auto bitcast = Ice::InstCast::create(::function, Ice::InstCast::Bitcast, vector, value);
 				::basicBlock->appendInst(bitcast);
@@ -2010,7 +2067,7 @@ Value *Nucleus::createConstantVector(const int64_t *constants, Type *type)
 	const int64_t *i = constants;
 	const double *f = reinterpret_cast<const double *>(constants);
 
-	// TODO(148082873): Fix global variable constants when generating multiple functions
+	// TODO(b/148082873): Fix global variable constants when generating multiple functions
 	Ice::Constant *ptr = nullptr;
 
 	switch((int)reinterpret_cast<intptr_t>(type))
@@ -2455,7 +2512,10 @@ Short4::Short4(RValue<Int4> cast)
 
 Short4::Short4(RValue<Float4> cast)
 {
-	UNIMPLEMENTED_NO_BUG("Short4::Short4(RValue<Float4> cast)");
+	// TODO(b/150791192): Generalize and optimize
+	auto smin = std::numeric_limits<short>::min();
+	auto smax = std::numeric_limits<short>::max();
+	*this = Short4(Int4(Max(Min(cast, Float4(smax)), Float4(smin))));
 }
 
 RValue<Short4> operator<<(RValue<Short4> lhs, unsigned char rhs)
@@ -4116,18 +4176,7 @@ RValue<Pointer<Byte>> ConstantData(void const *data, size_t size)
 Value *Call(RValue<Pointer<Byte>> fptr, Type *retTy, std::initializer_list<Value *> args, std::initializer_list<Type *> argTys)
 {
 	RR_DEBUG_INFO_UPDATE_LOC();
-	Ice::Variable *ret = nullptr;
-	if(retTy != nullptr)
-	{
-		ret = ::function->makeVariable(T(retTy));
-	}
-	auto call = Ice::InstCall::create(::function, args.size(), ret, V(fptr.value), false);
-	for(auto arg : args)
-	{
-		call->addArg(V(arg));
-	}
-	::basicBlock->appendInst(call);
-	return V(ret);
+	return V(sz::Call(::function, ::basicBlock, T(retTy), V(fptr.value), V(args), false));
 }
 
 void Breakpoint()
@@ -4426,19 +4475,16 @@ void FlushDebug() {}
 namespace {
 namespace coro {
 
-using FiberHandle = void *;
-
 // Instance data per generated coroutine
 // This is the "handle" type used for Coroutine functions
 // Lifetime: from yield to when CoroutineEntryDestroy generated function is called.
 struct CoroutineData
 {
-	FiberHandle mainFiber{};
-	FiberHandle routineFiber{};
-	bool convertedFiber = false;
-
-	// Variables used by coroutines
-	bool done = false;
+	bool useInternalScheduler = false;
+	marl::Event suspended;                                // the coroutine is suspended on a yield()
+	marl::Event resumed;                                  // the caller is suspended on an await()
+	marl::Event done{ marl::Event::Mode::Manual };        // the coroutine should stop at the next yield()
+	marl::Event terminated{ marl::Event::Mode::Manual };  // the coroutine has finished.
 	void *promisePtr = nullptr;
 };
 
@@ -4452,108 +4498,40 @@ void destroyCoroutineData(CoroutineData *coroData)
 	delete coroData;
 }
 
-void convertThreadToMainFiber(Nucleus::CoroutineHandle handle)
+// suspend() pauses execution of the coroutine, and resumes execution from the
+// caller's call to await().
+// Returns true if await() is called again, or false if coroutine_destroy()
+// is called.
+bool suspend(Nucleus::CoroutineHandle handle)
 {
-#if defined(_WIN32)
+	auto *data = reinterpret_cast<CoroutineData *>(handle);
+	data->suspended.signal();
+	data->resumed.wait();
+	return !data->done.test();
+}
+
+// resume() is called by await(), blocking until the coroutine calls yield()
+// or the coroutine terminates.
+void resume(Nucleus::CoroutineHandle handle)
+{
+	auto *data = reinterpret_cast<CoroutineData *>(handle);
+	data->resumed.signal();
+	data->suspended.wait();
+}
+
+// stop() is called by coroutine_destroy(), signalling that it's done, then blocks
+// until the coroutine ends, and deletes the coroutine data.
+void stop(Nucleus::CoroutineHandle handle)
+{
 	auto *coroData = reinterpret_cast<CoroutineData *>(handle);
-
-	coroData->mainFiber = ::ConvertThreadToFiber(nullptr);
-
-	if(coroData->mainFiber)
+	coroData->done.signal();      // signal that the coroutine should stop at next (or current) yield.
+	coroData->resumed.signal();   // wake the coroutine if blocked on a yield.
+	coroData->terminated.wait();  // wait for the coroutine to return.
+	if(coroData->useInternalScheduler)
 	{
-		coroData->convertedFiber = true;
+		::getOrCreateScheduler().unbind();
 	}
-	else
-	{
-		// We're probably already on a fiber, so just grab it and remember that we didn't
-		// convert it, so not to convert back to thread.
-		coroData->mainFiber = GetCurrentFiber();
-		coroData->convertedFiber = false;
-	}
-	ASSERT(coroData->mainFiber);
-#else
-	UNIMPLEMENTED_NO_BUG("convertThreadToMainFiber not implemented for current platform");
-#endif
-}
-
-void convertMainFiberToThread(Nucleus::CoroutineHandle handle)
-{
-#if defined(_WIN32)
-	auto *coroData = reinterpret_cast<CoroutineData *>(handle);
-
-	ASSERT(coroData->mainFiber);
-
-	if(coroData->convertedFiber)
-	{
-		::ConvertFiberToThread();
-		coroData->mainFiber = nullptr;
-	}
-#else
-	UNIMPLEMENTED_NO_BUG("convertMainFiberToThread not implemented for current platform");
-#endif
-}
-using FiberFunc = std::function<void()>;
-
-void createRoutineFiber(Nucleus::CoroutineHandle handle, FiberFunc *fiberFunc)
-{
-#if defined(_WIN32)
-	struct Invoker
-	{
-		FiberFunc func;
-
-		static VOID __stdcall fiberEntry(LPVOID lpParameter)
-		{
-			auto *func = reinterpret_cast<FiberFunc *>(lpParameter);
-			(*func)();
-		}
-	};
-
-	auto *coroData = reinterpret_cast<CoroutineData *>(handle);
-
-	constexpr SIZE_T StackSize = 2 * 1024 * 1024;
-	coroData->routineFiber = ::CreateFiber(StackSize, &Invoker::fiberEntry, fiberFunc);
-	ASSERT(coroData->routineFiber);
-#else
-	UNIMPLEMENTED_NO_BUG("createRoutineFiber not implemented for current platform");
-#endif
-}
-
-void deleteRoutineFiber(Nucleus::CoroutineHandle handle)
-{
-#if defined(_WIN32)
-	auto *coroData = reinterpret_cast<CoroutineData *>(handle);
-	ASSERT(coroData->routineFiber);
-	::DeleteFiber(coroData->routineFiber);
-	coroData->routineFiber = nullptr;
-#else
-	UNIMPLEMENTED_NO_BUG("deleteRoutineFiber not implemented for current platform");
-#endif
-}
-
-void switchToMainFiber(Nucleus::CoroutineHandle handle)
-{
-#if defined(_WIN32)
-	auto *coroData = reinterpret_cast<CoroutineData *>(handle);
-
-	// Win32
-	ASSERT(coroData->mainFiber);
-	::SwitchToFiber(coroData->mainFiber);
-#else
-	UNIMPLEMENTED_NO_BUG("switchToMainFiber not implemented for current platform");
-#endif
-}
-
-void switchToRoutineFiber(Nucleus::CoroutineHandle handle)
-{
-#if defined(_WIN32)
-	auto *coroData = reinterpret_cast<CoroutineData *>(handle);
-
-	// Win32
-	ASSERT(coroData->routineFiber);
-	::SwitchToFiber(coroData->routineFiber);
-#else
-	UNIMPLEMENTED_NO_BUG("switchToRoutineFiber not implemented for current platform");
-#endif
+	coro::destroyCoroutineData(coroData);  // free the coroutine data.
 }
 
 namespace detail {
@@ -4574,17 +4552,10 @@ Nucleus::CoroutineHandle getHandleParam()
 	return handle;
 }
 
-void setDone(Nucleus::CoroutineHandle handle)
-{
-	auto *coroData = reinterpret_cast<CoroutineData *>(handle);
-	ASSERT(!coroData->done);  // Should be called once
-	coroData->done = true;
-}
-
 bool isDone(Nucleus::CoroutineHandle handle)
 {
 	auto *coroData = reinterpret_cast<CoroutineData *>(handle);
-	return coroData->done;
+	return coroData->done.test();
 }
 
 void setPromisePtr(Nucleus::CoroutineHandle handle, void *promisePtr)
@@ -4628,29 +4599,13 @@ public:
 		//        ... <REACTOR CODE> ...
 		//
 
-		// Save original entry block and current block, and create a new entry block and make it current.
-		// This new block will be used to inject code above the begin routine's existing code. We make
-		// this block branch to the original entry block as the last instruction.
-		auto origEntryBB = ::function->getEntryNode();
-		auto origCurrBB = ::basicBlock;
-		auto newBB = ::function->makeNode();
-		sz::replaceEntryNode(::function, newBB);
-		::basicBlock = newBB;
-
 		//        this->handle = coro::getHandleParam();
-		this->handle = sz::Call(::function, ::basicBlock, coro::getHandleParam);
+		this->handle = sz::Call(::function, ::entryBlock, coro::getHandleParam);
 
 		//        YieldType promise;
 		//        coro::setPromisePtr(handle, &promise); // For await
 		this->promise = sz::allocateStackVariable(::function, T(::coroYieldType));
-		sz::Call(::function, ::basicBlock, coro::setPromisePtr, this->handle, this->promise);
-
-		// Branch to original entry block
-		auto br = Ice::InstBr::create(::function, origEntryBB);
-		::basicBlock->appendInst(br);
-
-		// Restore current block for future instructions
-		::basicBlock = origCurrBB;
+		sz::Call(::function, ::entryBlock, coro::setPromisePtr, this->handle, this->promise);
 	}
 
 	// Adds instructions for Yield() calls at the current location of the main coroutine function.
@@ -4659,30 +4614,27 @@ public:
 		//        ... <REACTOR CODE> ...
 		//
 		//        promise = val;
-		//        coro::switchToMainFiber(handle);
+		//        if (!coro::suspend(handle)) {
+		//            return false; // coroutine has been stopped by the caller.
+		//        }
 		//
 		//        ... <REACTOR CODE> ...
 
+		//        promise = val;
 		Nucleus::createStore(val, V(this->promise), ::coroYieldType);
-		sz::Call(::function, ::basicBlock, coro::switchToMainFiber, this->handle);
-	}
 
-	// Adds instructions at the end of the current main coroutine function to end the coroutine.
-	void generateCoroutineEnd()
-	{
+		//        if (!coro::suspend(handle)) {
+		auto result = sz::Call(::function, ::basicBlock, coro::suspend, this->handle);
+		auto doneBlock = Nucleus::createBasicBlock();
+		auto resumeBlock = Nucleus::createBasicBlock();
+		Nucleus::createCondBr(V(result), resumeBlock, doneBlock);
+
+		//            return false; // coroutine has been stopped by the caller.
+		::basicBlock = doneBlock;
+		Nucleus::createRetVoid();  // coroutine return value is ignored.
+
 		//        ... <REACTOR CODE> ...
-		//
-		//        coro::setDone(handle);
-		//        coro::switchToMainFiber();
-		//        // Unreachable
-		//    }
-		//
-
-		sz::Call(::function, ::basicBlock, coro::setDone, this->handle);
-
-		// A Win32 Fiber function must not end, otherwise it tears down the thread it's running on.
-		// So we add code to switch back to the main thread.
-		sz::Call(::function, ::basicBlock, coro::switchToMainFiber, this->handle);
+		::basicBlock = resumeBlock;
 	}
 
 	using FunctionUniquePtr = std::unique_ptr<Ice::Cfg>;
@@ -4701,7 +4653,7 @@ public:
 		//     {
 		//         YieldType* promise = coro::getPromisePtr(handle);
 		//         *out = *promise;
-		//         coro::switchToRoutineFiber(handle);
+		//         coro::resume(handle);
 		//         return true;
 		//     }
 		// }
@@ -4738,8 +4690,8 @@ public:
 			auto store = Ice::InstStore::create(awaitFunc, promiseVal, outPtr);
 			resumeBlock->appendInst(store);
 
-			//         coro::switchToRoutineFiber(handle);
-			sz::Call(awaitFunc, resumeBlock, coro::switchToRoutineFiber, handle);
+			//         coro::resume(handle);
+			sz::Call(awaitFunc, resumeBlock, coro::resume, handle);
 
 			//         return true;
 			Ice::InstRet *ret = Ice::InstRet::create(awaitFunc, ::context->getConstantInt32(1));
@@ -4755,7 +4707,7 @@ public:
 		//         <resumeBlock>
 		//     }
 		Ice::CfgNode *bb = awaitFunc->getEntryNode();
-		Ice::Variable *done = sz::Call(awaitFunc, bb, coro::isDone);
+		Ice::Variable *done = sz::Call(awaitFunc, bb, coro::isDone, handle);
 		auto br = Ice::InstBr::create(awaitFunc, done, doneBlock, resumeBlock);
 		bb->appendInst(br);
 
@@ -4768,9 +4720,7 @@ public:
 	{
 		// void coroutine_destroy(Nucleus::CoroutineHandle handle)
 		// {
-		//     coro::convertMainFiberToThread(coroData);
-		//     coro::deleteRoutineFiber(handle);
-		//     coro::destroyCoroutineData(handle);
+		//     coro::stop(handle); // signal and wait for coroutine to stop, and delete coroutine data
 		//     return;
 		// }
 
@@ -4784,14 +4734,8 @@ public:
 
 		auto *bb = destroyFunc->getEntryNode();
 
-		//     coro::convertMainFiberToThread(coroData);
-		sz::Call(destroyFunc, bb, coro::convertMainFiberToThread, handle);
-
-		//     coro::deleteRoutineFiber(handle);
-		sz::Call(destroyFunc, bb, coro::deleteRoutineFiber, handle);
-
-		//     coro::destroyCoroutineData(handle);
-		sz::Call(destroyFunc, bb, coro::destroyCoroutineData, handle);
+		//     coro::stop(handle); // signal and wait for coroutine to stop, and delete coroutine data
+		sz::Call(destroyFunc, bb, coro::stop, handle);
 
 		//     return;
 		Ice::InstRet *ret = Ice::InstRet::create(destroyFunc);
@@ -4810,26 +4754,25 @@ static Nucleus::CoroutineHandle invokeCoroutineBegin(std::function<Nucleus::Coro
 	// This doubles up as our coroutine handle
 	auto coroData = coro::createCoroutineData();
 
-	// Convert current thread to a fiber so we can create new fibers and switch to them
-	coro::convertThreadToMainFiber(coroData);
+	coroData->useInternalScheduler = (marl::Scheduler::get() == nullptr);
+	if(coroData->useInternalScheduler)
+	{
+		::getOrCreateScheduler().bind();
+	}
 
-	coro::FiberFunc fiberFunc = [&]() {
+	marl::schedule([=] {
 		// Store handle in TLS so that the coroutine can grab it right away, before
 		// any fiber switch occurs.
 		coro::setHandleParam(coroData);
 
-		// Invoke the begin function in the context of the routine fiber
 		beginFunc();
 
-		// Either it yielded, or finished. In either case, we switch back to the main fiber.
-		// We don't ever return from this function, or the current thread will be destroyed.
-		coro::switchToMainFiber(coroData);
-	};
+		coroData->done.signal();        // coroutine is done.
+		coroData->suspended.signal();   // resume any blocking await() call.
+		coroData->terminated.signal();  // signal that the coroutine data is ready for freeing.
+	});
 
-	coro::createRoutineFiber(coroData, &fiberFunc);
-
-	// Fiber will now start running, executing the saved beginFunc
-	coro::switchToRoutineFiber(coroData);
+	coroData->suspended.wait();  // block until the first yield or coroutine end
 
 	return coroData;
 }
@@ -4876,8 +4819,7 @@ std::shared_ptr<Routine> Nucleus::acquireCoroutine(const char *name, const Confi
 		// Finish generating coroutine functions
 		{
 			Ice::CfgLocalAllocatorScope scopedAlloc{ ::function };
-			::coroGen->generateCoroutineEnd();
-			createRetVoidIfNoRet();
+			finalizeFunction();
 		}
 
 		auto awaitFunc = ::coroGen->generateAwaitFunction();
@@ -4897,7 +4839,7 @@ std::shared_ptr<Routine> Nucleus::acquireCoroutine(const char *name, const Confi
 	{
 		{
 			Ice::CfgLocalAllocatorScope scopedAlloc{ ::function };
-			createRetVoidIfNoRet();
+			finalizeFunction();
 		}
 
 		::coroYieldType = nullptr;
