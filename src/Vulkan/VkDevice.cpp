@@ -14,7 +14,7 @@
 
 #include "VkDevice.hpp"
 
-#include "VkConfig.h"
+#include "VkConfig.hpp"
 #include "VkDescriptorSetLayout.hpp"
 #include "VkFence.hpp"
 #include "VkQueue.hpp"
@@ -38,25 +38,21 @@ std::chrono::time_point<std::chrono::system_clock, std::chrono::nanoseconds> now
 
 namespace vk {
 
-std::shared_ptr<rr::Routine> Device::SamplingRoutineCache::query(const vk::Device::SamplingRoutineCache::Key &key) const
+void Device::SamplingRoutineCache::updateSnapshot()
 {
-	return cache.query(key);
-}
+	marl::lock lock(mutex);
 
-void Device::SamplingRoutineCache::add(const vk::Device::SamplingRoutineCache::Key &key, const std::shared_ptr<rr::Routine> &routine)
-{
-	ASSERT(routine);
-	cache.add(key, routine);
-}
+	if(snapshotNeedsUpdate)
+	{
+		snapshot.clear();
 
-rr::Routine *Device::SamplingRoutineCache::queryConst(const vk::Device::SamplingRoutineCache::Key &key) const
-{
-	return cache.queryConstCache(key).get();
-}
+		for(auto it : cache)
+		{
+			snapshot[it.key()] = it.data();
+		}
 
-void Device::SamplingRoutineCache::updateConstCache()
-{
-	cache.updateConstCache();
+		snapshotNeedsUpdate = false;
+	}
 }
 
 Device::SamplerIndexer::~SamplerIndexer()
@@ -66,7 +62,7 @@ Device::SamplerIndexer::~SamplerIndexer()
 
 uint32_t Device::SamplerIndexer::index(const SamplerState &samplerState)
 {
-	std::lock_guard<std::mutex> lock(mutex);
+	marl::lock lock(mutex);
 
 	auto it = map.find(samplerState);
 
@@ -85,7 +81,7 @@ uint32_t Device::SamplerIndexer::index(const SamplerState &samplerState)
 
 void Device::SamplerIndexer::remove(const SamplerState &samplerState)
 {
-	std::lock_guard<std::mutex> lock(mutex);
+	marl::lock lock(mutex);
 
 	auto it = map.find(samplerState);
 	ASSERT(it != map.end());
@@ -302,20 +298,9 @@ Device::SamplingRoutineCache *Device::getSamplingRoutineCache() const
 	return samplingRoutineCache.get();
 }
 
-rr::Routine *Device::findInConstCache(const SamplingRoutineCache::Key &key) const
+void Device::updateSamplingRoutineSnapshotCache()
 {
-	return samplingRoutineCache->queryConst(key);
-}
-
-void Device::updateSamplingRoutineConstCache()
-{
-	std::unique_lock<std::mutex> lock(samplingRoutineCacheMutex);
-	samplingRoutineCache->updateConstCache();
-}
-
-std::mutex &Device::getSamplingRoutineCacheMutex()
-{
-	return samplingRoutineCacheMutex;
+	samplingRoutineCache->updateSnapshot();
 }
 
 uint32_t Device::indexSampler(const SamplerState &samplerState)

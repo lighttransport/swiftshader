@@ -8,8 +8,11 @@ set SRC=%cd%\git\SwiftShader
 cd %SRC%
 if !ERRORLEVEL! neq 0 exit /b !ERRORLEVEL!
 
-git submodule update --init
-if !ERRORLEVEL! neq 0 exit /b !ERRORLEVEL!
+
+IF "%LLVM_VERSION%"=="10.0" (
+  ECHO "TODO(b/152339534): LLVM 10 migration is still in progress"
+  EXIT 0
+)
 
 # Lower the amount of debug info, to reduce Kokoro build times.
 SET LESS_DEBUG_INFO=1
@@ -17,7 +20,18 @@ SET LESS_DEBUG_INFO=1
 cd %SRC%\build
 if !ERRORLEVEL! neq 0 exit /b !ERRORLEVEL!
 
-cmake .. -G "Visual Studio 15 2017 Win64" -Thost=x64 "-DCMAKE_BUILD_TYPE=%BUILD_TYPE%" "-DREACTOR_BACKEND=%REACTOR_BACKEND%" "-DREACTOR_VERIFY_LLVM_IR=1" "-DLESS_DEBUG_INFO=%LESS_DEBUG_INFO%"
+rem Update CMake
+choco upgrade cmake -y --limit-output --no-progress
+cmake --version
+
+cmake .. ^
+    -G "Visual Studio 15 2017 Win64" ^
+    -Thost=x64 ^
+    "-DCMAKE_BUILD_TYPE=%BUILD_TYPE%" ^
+    "-DREACTOR_BACKEND=%REACTOR_BACKEND%" ^
+    "-DSWIFTSHADER_LLVM_VERSION=%LLVM_VERSION%" ^
+    "-DREACTOR_VERIFY_LLVM_IR=1" ^
+    "-DLESS_DEBUG_INFO=%LESS_DEBUG_INFO%"
 if !ERRORLEVEL! neq 0 exit /b !ERRORLEVEL!
 
 cmake --build .
@@ -32,6 +46,9 @@ build\Debug\ReactorUnitTests.exe
 if !ERRORLEVEL! neq 0 exit /b !ERRORLEVEL!
 
 build\Debug\gles-unittests.exe
+if !ERRORLEVEL! neq 0 exit /b !ERRORLEVEL!
+
+build\Debug\system-unittests.exe
 if !ERRORLEVEL! neq 0 exit /b !ERRORLEVEL!
 
 build\Debug\vk-unittests.exe

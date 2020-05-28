@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include "VkFormat.h"
+#include "VkFormat.hpp"
 
 #include "System/Debug.hpp"
 #include "System/Math.hpp"
@@ -2228,66 +2228,30 @@ sw::float4 Format::getScale() const
 	return sw::float4(1.0f, 1.0f, 1.0f, 1.0f);
 }
 
-bool Format::has16bitTextureFormat() const
+bool Format::has16bitPackedTextureFormat() const
 {
+	if(bytes() != 2)
+	{
+		return false;
+	}
+
 	switch(format)
 	{
 		case VK_FORMAT_B4G4R4A4_UNORM_PACK16:
 		case VK_FORMAT_R5G6B5_UNORM_PACK16:
 		case VK_FORMAT_A1R5G5B5_UNORM_PACK16:
 			return true;
-		case VK_FORMAT_R8_SNORM:
-		case VK_FORMAT_R8G8_SNORM:
-		case VK_FORMAT_R8G8B8A8_SNORM:
-		case VK_FORMAT_R8_SINT:
-		case VK_FORMAT_R8_UINT:
 		case VK_FORMAT_R8G8_SINT:
 		case VK_FORMAT_R8G8_UINT:
-		case VK_FORMAT_R8G8B8A8_SINT:
-		case VK_FORMAT_R8G8B8A8_UINT:
-		case VK_FORMAT_R32_SINT:
-		case VK_FORMAT_R32_UINT:
-		case VK_FORMAT_R32G32_SINT:
-		case VK_FORMAT_R32G32_UINT:
-		case VK_FORMAT_R32G32B32A32_SINT:
-		case VK_FORMAT_R32G32B32A32_UINT:
 		case VK_FORMAT_R8G8_UNORM:
+		case VK_FORMAT_R8G8_SNORM:
 		case VK_FORMAT_R8G8_SRGB:
-		case VK_FORMAT_B8G8R8_UNORM:
-		case VK_FORMAT_B8G8R8A8_UNORM:
-		case VK_FORMAT_R8G8B8A8_UNORM:
-		case VK_FORMAT_B8G8R8_SRGB:
-		case VK_FORMAT_R8G8B8A8_SRGB:
-		case VK_FORMAT_B8G8R8A8_SRGB:
-		case VK_FORMAT_R32_SFLOAT:
-		case VK_FORMAT_R32G32_SFLOAT:
-		case VK_FORMAT_R32G32B32A32_SFLOAT:
-		case VK_FORMAT_R8_UNORM:
 		case VK_FORMAT_R16_UNORM:
-		case VK_FORMAT_R8_SRGB:
 		case VK_FORMAT_R16_SNORM:
-		case VK_FORMAT_R16G16_UNORM:
-		case VK_FORMAT_R16G16_SNORM:
-		case VK_FORMAT_R16G16B16A16_UNORM:
 		case VK_FORMAT_R16_SINT:
 		case VK_FORMAT_R16_UINT:
 		case VK_FORMAT_R16_SFLOAT:
-		case VK_FORMAT_R16G16_SINT:
-		case VK_FORMAT_R16G16_UINT:
-		case VK_FORMAT_R16G16_SFLOAT:
-		case VK_FORMAT_R16G16B16A16_SINT:
-		case VK_FORMAT_R16G16B16A16_UINT:
-		case VK_FORMAT_R16G16B16A16_SFLOAT:
-		case VK_FORMAT_G8_B8_R8_3PLANE_420_UNORM:
-		case VK_FORMAT_G8_B8R8_2PLANE_420_UNORM:
-		case VK_FORMAT_A2B10G10R10_UNORM_PACK32:
-		case VK_FORMAT_A2B10G10R10_UINT_PACK32:
-		case VK_FORMAT_A2R10G10B10_UNORM_PACK32:
-		case VK_FORMAT_A2R10G10B10_UINT_PACK32:
-		case VK_FORMAT_E5B9G9R9_UFLOAT_PACK32:
-		case VK_FORMAT_B10G11R11_UFLOAT_PACK32:
 		case VK_FORMAT_D16_UNORM:
-		case VK_FORMAT_S8_UINT:
 			return false;
 		default:
 			UNSUPPORTED("Format: %d", int(format));
@@ -2601,7 +2565,6 @@ static constexpr uint8_t pack(VkFormat format)
 	return 0;
 }
 
-static_assert(VK_HEADER_VERSION == 128, "Update VkFormat to uint8_t mapping if needed");
 static_assert(pack(VK_FORMAT_UNDEFINED) == 0, "Incorrect VkFormat packed value");
 static_assert(pack(VK_FORMAT_ASTC_12x12_SRGB_BLOCK) == 184, "Incorrect VkFormat packed value");
 static_assert(pack(VK_FORMAT_G8B8G8R8_422_UNORM) == 185, "Incorrect VkFormat packed value");
@@ -2614,8 +2577,9 @@ static_assert(pack(VK_FORMAT_ASTC_12x12_SFLOAT_BLOCK_EXT) == 240, "Incorrect VkF
 uint8_t Format::mapTo8bit(VkFormat format)
 {
 	ASSERT(format <= VK_FORMAT_G16_B16_R16_3PLANE_444_UNORM);
-
-	return pack(format);
+	uint8_t packed = pack(format);
+	ASSERT_MSG(packed > 0, "Update VkFormat to uint8_t mapping");
+	return packed;
 }
 
 }  // namespace vk

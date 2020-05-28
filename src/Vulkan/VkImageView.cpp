@@ -74,7 +74,7 @@ Identifier::Identifier(const Image *image, VkImageViewType type, VkFormat fmt, V
 
 Identifier::Identifier(VkFormat fmt)
 {
-	static_assert(VK_IMAGE_VIEW_TYPE_END_RANGE == 6, "VkImageViewType does not allow using 7 to indicate buffer view");
+	static_assert(vk::VK_IMAGE_VIEW_TYPE_END_RANGE == 6, "VkImageViewType does not allow using 7 to indicate buffer view");
 	imageViewType = 7;  // Still fits in 3-bit field
 	format = Format::mapTo8bit(fmt);
 }
@@ -86,7 +86,7 @@ ImageView::ImageView(const VkImageViewCreateInfo *pCreateInfo, void *mem, const 
     , components(ResolveComponentMapping(pCreateInfo->components, format))
     , subresourceRange(ResolveRemainingLevelsLayers(pCreateInfo->subresourceRange, image))
     , ycbcrConversion(ycbcrConversion)
-    , id(image, viewType, format, components)
+    , id(image, viewType, format.getAspectFormat(subresourceRange.aspectMask), components)
 {
 }
 

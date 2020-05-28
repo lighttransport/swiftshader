@@ -15,7 +15,7 @@
 #ifndef VK_IMAGE_VIEW_HPP_
 #define VK_IMAGE_VIEW_HPP_
 
-#include "VkFormat.h"
+#include "VkFormat.hpp"
 #include "VkImage.hpp"
 #include "VkObject.hpp"
 
@@ -110,7 +110,7 @@ public:
 
 	const VkComponentMapping &getComponentMapping() const { return components; }
 	const VkImageSubresourceRange &getSubresourceRange() const { return subresourceRange; }
-	size_t getImageSizeInBytes() const { return image->getMemoryRequirements().size; }
+	size_t getSizeInBytes() const { return image->getSizeInBytes(subresourceRange); }
 
 private:
 	bool imageTypesMatch(VkImageType imageType) const;

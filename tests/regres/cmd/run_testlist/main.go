@@ -21,9 +21,12 @@
 package main
 
 import (
+	"bytes"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
+	"io/ioutil"
 	"log"
 	"math/rand"
 	"os"
@@ -33,21 +36,33 @@ import (
 	"strings"
 	"time"
 
+	"../../cause"
+	"../../cov"
 	"../../deqp"
+	"../../llvm"
 	"../../shell"
 	"../../testlist"
+	"../../util"
 )
+
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
 
 var (
 	deqpVkBinary  = flag.String("deqp-vk", "deqp-vk", "path to the deqp-vk binary")
 	testList      = flag.String("test-list", "vk-master-PASS.txt", "path to a test list file")
-	numThreads    = flag.Int("num-threads", runtime.NumCPU(), "number of parallel test runner processes")
+	numThreads    = flag.Int("num-threads", min(runtime.NumCPU(), 100), "number of parallel test runner processes")
 	maxProcMemory = flag.Uint64("max-proc-mem", shell.MaxProcMemory, "maximum virtual memory per child process")
 	output        = flag.String("output", "results.json", "path to an output JSON results file")
 	filter        = flag.String("filter", "", "filter for test names. Start with a '/' to indicate regex")
 	limit         = flag.Int("limit", 0, "only run a maximum of this number of tests")
 	shuffle       = flag.Bool("shuffle", false, "shuffle tests")
 	noResults     = flag.Bool("no-results", false, "disable generation of results.json file")
+	genCoverage   = flag.Bool("coverage", false, "generate test coverage")
 )
 
 const testTimeout = time.Minute * 2
@@ -98,6 +113,17 @@ func run() error {
 		TestTimeout:      testTimeout,
 	}
 
+	if *genCoverage {
+		icdPath := findSwiftshaderICD()
+		t := findToolchain(icdPath)
+		config.CoverageEnv = &cov.Env{
+			LLVM:     t.llvm,
+			TurboCov: t.turbocov,
+			RootDir:  projectRootDir(),
+			ExePath:  findSwiftshaderSO(icdPath),
+		}
+	}
+
 	res, err := config.Run()
 	if err != nil {
 		return err
@@ -113,6 +139,16 @@ func run() error {
 		}
 	}
 
+	if *genCoverage {
+		f, err := os.Create("coverage.dat")
+		if err != nil {
+			return cause.Wrap(err, "Couldn't open coverage.dat file")
+		}
+		if err := res.Coverage.Encode("master", f); err != nil {
+			return cause.Wrap(err, "Couldn't encode coverage data")
+		}
+	}
+
 	if !*noResults {
 		err = res.Save(*output)
 		if err != nil {
@@ -121,6 +157,93 @@ func run() error {
 	}
 
 	return nil
+}
+
+func findSwiftshaderICD() string {
+	icdPaths := strings.Split(os.Getenv("VK_ICD_FILENAMES"), ";")
+	for _, icdPath := range icdPaths {
+		_, file := filepath.Split(icdPath)
+		if file == "vk_swiftshader_icd.json" {
+			return icdPath
+		}
+	}
+	panic("Cannot find vk_swiftshader_icd.json in VK_ICD_FILENAMES")
+}
+
+func findSwiftshaderSO(vkSwiftshaderICD string) string {
+	root := struct {
+		ICD struct {
+			Path string `json:"library_path"`
+		}
+	}{}
+
+	icd, err := ioutil.ReadFile(vkSwiftshaderICD)
+	if err != nil {
+		panic(fmt.Errorf("Could not read '%v'. %v", vkSwiftshaderICD, err))
+	}
+
+	if err := json.NewDecoder(bytes.NewReader(icd)).Decode(&root); err != nil {
+		panic(fmt.Errorf("Could not parse '%v'. %v", vkSwiftshaderICD, err))
+	}
+
+	if util.IsFile(root.ICD.Path) {
+		return root.ICD.Path
+	}
+	dir := filepath.Dir(vkSwiftshaderICD)
+	path, err := filepath.Abs(filepath.Join(dir, root.ICD.Path))
+	if err != nil {
+		panic(fmt.Errorf("Could not locate ICD so at '%v'. %v", root.ICD.Path, err))
+	}
+
+	return path
+}
+
+type toolchain struct {
+	llvm     llvm.Toolchain
+	turbocov string
+}
+
+func findToolchain(vkSwiftshaderICD string) toolchain {
+	minVersion := llvm.Version{Major: 7}
+
+	// Try finding the llvm toolchain via the CMake generated
+	// coverage-toolchain.txt file that sits next to vk_swiftshader_icd.json.
+	dir := filepath.Dir(vkSwiftshaderICD)
+	toolchainInfoPath := filepath.Join(dir, "coverage-toolchain.txt")
+	if util.IsFile(toolchainInfoPath) {
+		if file, err := os.Open(toolchainInfoPath); err == nil {
+			defer file.Close()
+			content := struct {
+				LLVM     string `json:"llvm"`
+				TurboCov string `json:"turbo-cov"`
+			}{}
+			err := json.NewDecoder(file).Decode(&content)
+			if err != nil {
+				log.Fatalf("Couldn't read 'toolchainInfoPath': %v", err)
+			}
+			if t := llvm.Search(content.LLVM).FindAtLeast(minVersion); t != nil {
+				return toolchain{*t, content.TurboCov}
+			}
+		}
+	}
+
+	// Fallback, try searching PATH.
+	if t := llvm.Search().FindAtLeast(minVersion); t != nil {
+		return toolchain{*t, ""}
+	}
+
+	log.Fatal("Could not find LLVM toolchain")
+	return toolchain{}
+}
+
+func projectRootDir() string {
+	_, thisFile, _, _ := runtime.Caller(1)
+	thisDir := filepath.Dir(thisFile)
+	root, err := filepath.Abs(filepath.Join(thisDir, "../../../.."))
+	if err != nil {
+		panic(err)
+	}
+	return root
 }
 
 func main() {
