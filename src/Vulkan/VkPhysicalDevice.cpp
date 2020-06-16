@@ -14,7 +14,7 @@
 
 #include "VkPhysicalDevice.hpp"
 
-#include "VkConfig.h"
+#include "VkConfig.hpp"
 #include "Pipeline/SpirvShader.hpp"  // sw::SIMD::Width
 #include "Reactor/Reactor.hpp"
 
@@ -39,6 +39,15 @@ static void setExternalMemoryProperties(VkExternalMemoryHandleTypeFlagBits handl
 	{
 		properties->compatibleHandleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_ANDROID_HARDWARE_BUFFER_BIT_ANDROID;
 		properties->exportFromImportedHandleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_ANDROID_HARDWARE_BUFFER_BIT_ANDROID;
+		properties->externalMemoryFeatures = VK_EXTERNAL_MEMORY_FEATURE_IMPORTABLE_BIT | VK_EXTERNAL_MEMORY_FEATURE_EXPORTABLE_BIT;
+		return;
+	}
+#endif
+#if VK_USE_PLATFORM_FUCHSIA
+	if(handleType == VK_EXTERNAL_MEMORY_HANDLE_TYPE_TEMP_ZIRCON_VMO_BIT_FUCHSIA)
+	{
+		properties->compatibleHandleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_TEMP_ZIRCON_VMO_BIT_FUCHSIA;
+		properties->exportFromImportedHandleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_TEMP_ZIRCON_VMO_BIT_FUCHSIA;
 		properties->externalMemoryFeatures = VK_EXTERNAL_MEMORY_FEATURE_IMPORTABLE_BIT | VK_EXTERNAL_MEMORY_FEATURE_EXPORTABLE_BIT;
 		return;
 	}
@@ -71,12 +80,16 @@ const VkPhysicalDeviceFeatures &PhysicalDevice::getFeatures() const
 		VK_TRUE,   // fillModeNonSolid
 		VK_FALSE,  // depthBounds
 		VK_FALSE,  // wideLines
-		VK_FALSE,  // largePoints
+		VK_TRUE,   // largePoints
 		VK_FALSE,  // alphaToOne
 		VK_FALSE,  // multiViewport
 		VK_TRUE,   // samplerAnisotropy
 		VK_TRUE,   // textureCompressionETC2
-		VK_TRUE,   // textureCompressionASTC_LDR
+#ifdef SWIFTSHADER_ENABLE_ASTC
+		VK_TRUE,  // textureCompressionASTC_LDR
+#else
+		VK_FALSE,  // textureCompressionASTC_LDR
+#endif
 		VK_FALSE,  // textureCompressionBC
 		VK_FALSE,  // occlusionQueryPrecise
 		VK_FALSE,  // pipelineStatisticsQuery
@@ -88,10 +101,10 @@ const VkPhysicalDeviceFeatures &PhysicalDevice::getFeatures() const
 		VK_FALSE,  // shaderStorageImageMultisample
 		VK_FALSE,  // shaderStorageImageReadWithoutFormat
 		VK_FALSE,  // shaderStorageImageWriteWithoutFormat
-		VK_FALSE,  // shaderUniformBufferArrayDynamicIndexing
-		VK_FALSE,  // shaderSampledImageArrayDynamicIndexing
-		VK_FALSE,  // shaderStorageBufferArrayDynamicIndexing
-		VK_FALSE,  // shaderStorageImageArrayDynamicIndexing
+		VK_TRUE,   // shaderUniformBufferArrayDynamicIndexing
+		VK_TRUE,   // shaderSampledImageArrayDynamicIndexing
+		VK_TRUE,   // shaderStorageBufferArrayDynamicIndexing
+		VK_TRUE,   // shaderStorageImageArrayDynamicIndexing
 		VK_TRUE,   // shaderClipDistance
 		VK_TRUE,   // shaderCullDistance
 		VK_FALSE,  // shaderFloat64
@@ -517,6 +530,8 @@ void PhysicalDevice::getFormatProperties(Format format, VkFormatProperties *pFor
 		case VK_FORMAT_BC4_SNORM_BLOCK:
 		case VK_FORMAT_BC5_UNORM_BLOCK:
 		case VK_FORMAT_BC5_SNORM_BLOCK:
+		case VK_FORMAT_BC7_UNORM_BLOCK:
+		case VK_FORMAT_BC7_SRGB_BLOCK:
 		case VK_FORMAT_ETC2_R8G8B8_UNORM_BLOCK:
 		case VK_FORMAT_ETC2_R8G8B8_SRGB_BLOCK:
 		case VK_FORMAT_ETC2_R8G8B8A1_UNORM_BLOCK:
@@ -527,6 +542,7 @@ void PhysicalDevice::getFormatProperties(Format format, VkFormatProperties *pFor
 		case VK_FORMAT_EAC_R11_SNORM_BLOCK:
 		case VK_FORMAT_EAC_R11G11_UNORM_BLOCK:
 		case VK_FORMAT_EAC_R11G11_SNORM_BLOCK:
+#ifdef SWIFTSHADER_ENABLE_ASTC
 		case VK_FORMAT_ASTC_4x4_UNORM_BLOCK:
 		case VK_FORMAT_ASTC_5x4_UNORM_BLOCK:
 		case VK_FORMAT_ASTC_5x5_UNORM_BLOCK:
@@ -555,6 +571,7 @@ void PhysicalDevice::getFormatProperties(Format format, VkFormatProperties *pFor
 		case VK_FORMAT_ASTC_10x10_SRGB_BLOCK:
 		case VK_FORMAT_ASTC_12x10_SRGB_BLOCK:
 		case VK_FORMAT_ASTC_12x12_SRGB_BLOCK:
+#endif
 		case VK_FORMAT_D16_UNORM:
 		case VK_FORMAT_D32_SFLOAT:
 		case VK_FORMAT_D32_SFLOAT_S8_UINT:
@@ -615,7 +632,7 @@ void PhysicalDevice::getFormatProperties(Format format, VkFormatProperties *pFor
 			    VK_FORMAT_FEATURE_STORAGE_IMAGE_ATOMIC_BIT;
 			pFormatProperties->bufferFeatures |=
 			    VK_FORMAT_FEATURE_STORAGE_TEXEL_BUFFER_ATOMIC_BIT;
-			// Fall through
+			// [[fallthrough]]
 		case VK_FORMAT_R8G8B8A8_UNORM:
 		case VK_FORMAT_R8G8B8A8_SNORM:
 		case VK_FORMAT_R8G8B8A8_UINT:
@@ -635,7 +652,7 @@ void PhysicalDevice::getFormatProperties(Format format, VkFormatProperties *pFor
 		case VK_FORMAT_R16G16_SFLOAT:
 			pFormatProperties->optimalTilingFeatures |=
 			    VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT;
-			// Fall through
+			// [[fallthrough]]
 		case VK_FORMAT_A8B8G8R8_UNORM_PACK32:
 		case VK_FORMAT_A8B8G8R8_SNORM_PACK32:
 		case VK_FORMAT_A8B8G8R8_UINT_PACK32:
@@ -670,7 +687,7 @@ void PhysicalDevice::getFormatProperties(Format format, VkFormatProperties *pFor
 		case VK_FORMAT_B10G11R11_UFLOAT_PACK32:
 			pFormatProperties->optimalTilingFeatures |=
 			    VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BLEND_BIT;
-			// Fall through
+			// [[fallthrough]]
 		case VK_FORMAT_R8_UINT:
 		case VK_FORMAT_R8_SINT:
 		case VK_FORMAT_R8G8_UINT:
@@ -890,7 +907,7 @@ void PhysicalDevice::getImageFormatProperties(Format format, VkImageType type, V
 	//  have further restrictions on their limits and capabilities compared to images created with other formats."
 	if(format.isYcbcrFormat())
 	{
-		pImageFormatProperties->maxMipLevels = 1;
+		pImageFormatProperties->maxMipLevels = 1;  // TODO(b/151263485): This is relied on by the sampler to disable mipmapping for Y'CbCr image sampling.
 		pImageFormatProperties->maxArrayLayers = 1;
 		pImageFormatProperties->sampleCounts = VK_SAMPLE_COUNT_1_BIT;
 	}

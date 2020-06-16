@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include "VkFormat.h"
+#include "VkFormat.hpp"
 
 #include "System/Debug.hpp"
 #include "System/Math.hpp"
@@ -592,11 +592,13 @@ VkFormat Format::getDecompressedFormat() const
 		case VK_FORMAT_BC1_RGBA_UNORM_BLOCK:
 		case VK_FORMAT_BC2_UNORM_BLOCK:
 		case VK_FORMAT_BC3_UNORM_BLOCK:
+		case VK_FORMAT_BC7_UNORM_BLOCK:
 			return VK_FORMAT_B8G8R8A8_UNORM;
 		case VK_FORMAT_BC1_RGB_SRGB_BLOCK:
 		case VK_FORMAT_BC1_RGBA_SRGB_BLOCK:
 		case VK_FORMAT_BC2_SRGB_BLOCK:
 		case VK_FORMAT_BC3_SRGB_BLOCK:
+		case VK_FORMAT_BC7_SRGB_BLOCK:
 			return VK_FORMAT_B8G8R8A8_SRGB;
 		case VK_FORMAT_BC4_UNORM_BLOCK:
 			return VK_FORMAT_R8_UNORM;
@@ -636,6 +638,8 @@ VkFormat Format::getDecompressedFormat() const
 		case VK_FORMAT_ASTC_12x10_SRGB_BLOCK:
 		case VK_FORMAT_ASTC_12x12_SRGB_BLOCK:
 			return VK_FORMAT_R8G8B8A8_SRGB;
+		case VK_FORMAT_BC6H_UFLOAT_BLOCK:
+		case VK_FORMAT_BC6H_SFLOAT_BLOCK:
 		case VK_FORMAT_ASTC_4x4_SFLOAT_BLOCK_EXT:
 		case VK_FORMAT_ASTC_5x4_SFLOAT_BLOCK_EXT:
 		case VK_FORMAT_ASTC_5x5_SFLOAT_BLOCK_EXT:
@@ -1316,6 +1320,8 @@ int Format::componentCount() const
 		case VK_FORMAT_G8_B8R8_2PLANE_420_UNORM:
 		case VK_FORMAT_BC1_RGB_UNORM_BLOCK:
 		case VK_FORMAT_BC1_RGB_SRGB_BLOCK:
+		case VK_FORMAT_BC6H_UFLOAT_BLOCK:
+		case VK_FORMAT_BC6H_SFLOAT_BLOCK:
 		case VK_FORMAT_ETC2_R8G8B8_UNORM_BLOCK:
 		case VK_FORMAT_ETC2_R8G8B8_SRGB_BLOCK:
 			return 3;
@@ -1376,6 +1382,8 @@ int Format::componentCount() const
 		case VK_FORMAT_BC2_SRGB_BLOCK:
 		case VK_FORMAT_BC3_UNORM_BLOCK:
 		case VK_FORMAT_BC3_SRGB_BLOCK:
+		case VK_FORMAT_BC7_UNORM_BLOCK:
+		case VK_FORMAT_BC7_SRGB_BLOCK:
 		case VK_FORMAT_ETC2_R8G8B8A1_UNORM_BLOCK:
 		case VK_FORMAT_ETC2_R8G8B8A1_SRGB_BLOCK:
 		case VK_FORMAT_ETC2_R8G8B8A8_UNORM_BLOCK:
@@ -1515,6 +1523,9 @@ bool Format::isUnsignedComponent(int component) const
 		case VK_FORMAT_BC3_SRGB_BLOCK:
 		case VK_FORMAT_BC4_UNORM_BLOCK:
 		case VK_FORMAT_BC5_UNORM_BLOCK:
+		case VK_FORMAT_BC6H_UFLOAT_BLOCK:
+		case VK_FORMAT_BC7_UNORM_BLOCK:
+		case VK_FORMAT_BC7_SRGB_BLOCK:
 		case VK_FORMAT_EAC_R11_UNORM_BLOCK:
 		case VK_FORMAT_EAC_R11G11_UNORM_BLOCK:
 		case VK_FORMAT_ETC2_R8G8B8_UNORM_BLOCK:
@@ -1577,6 +1588,7 @@ bool Format::isUnsignedComponent(int component) const
 		case VK_FORMAT_R64G64B64A64_SFLOAT:
 		case VK_FORMAT_BC4_SNORM_BLOCK:
 		case VK_FORMAT_BC5_SNORM_BLOCK:
+		case VK_FORMAT_BC6H_SFLOAT_BLOCK:
 		case VK_FORMAT_EAC_R11_SNORM_BLOCK:
 		case VK_FORMAT_EAC_R11G11_SNORM_BLOCK:
 		case VK_FORMAT_ASTC_4x4_SFLOAT_BLOCK_EXT:
@@ -1916,6 +1928,10 @@ int Format::pitchB(int width, int border, bool target) const
 		case VK_FORMAT_BC3_SRGB_BLOCK:
 		case VK_FORMAT_BC5_UNORM_BLOCK:
 		case VK_FORMAT_BC5_SNORM_BLOCK:
+		case VK_FORMAT_BC6H_UFLOAT_BLOCK:
+		case VK_FORMAT_BC6H_SFLOAT_BLOCK:
+		case VK_FORMAT_BC7_UNORM_BLOCK:
+		case VK_FORMAT_BC7_SRGB_BLOCK:
 		case VK_FORMAT_EAC_R11G11_UNORM_BLOCK:
 		case VK_FORMAT_EAC_R11G11_SNORM_BLOCK:
 		case VK_FORMAT_ETC2_R8G8B8A8_UNORM_BLOCK:
@@ -2212,66 +2228,30 @@ sw::float4 Format::getScale() const
 	return sw::float4(1.0f, 1.0f, 1.0f, 1.0f);
 }
 
-bool Format::has16bitTextureFormat() const
+bool Format::has16bitPackedTextureFormat() const
 {
+	if(bytes() != 2)
+	{
+		return false;
+	}
+
 	switch(format)
 	{
 		case VK_FORMAT_B4G4R4A4_UNORM_PACK16:
 		case VK_FORMAT_R5G6B5_UNORM_PACK16:
 		case VK_FORMAT_A1R5G5B5_UNORM_PACK16:
 			return true;
-		case VK_FORMAT_R8_SNORM:
-		case VK_FORMAT_R8G8_SNORM:
-		case VK_FORMAT_R8G8B8A8_SNORM:
-		case VK_FORMAT_R8_SINT:
-		case VK_FORMAT_R8_UINT:
 		case VK_FORMAT_R8G8_SINT:
 		case VK_FORMAT_R8G8_UINT:
-		case VK_FORMAT_R8G8B8A8_SINT:
-		case VK_FORMAT_R8G8B8A8_UINT:
-		case VK_FORMAT_R32_SINT:
-		case VK_FORMAT_R32_UINT:
-		case VK_FORMAT_R32G32_SINT:
-		case VK_FORMAT_R32G32_UINT:
-		case VK_FORMAT_R32G32B32A32_SINT:
-		case VK_FORMAT_R32G32B32A32_UINT:
 		case VK_FORMAT_R8G8_UNORM:
+		case VK_FORMAT_R8G8_SNORM:
 		case VK_FORMAT_R8G8_SRGB:
-		case VK_FORMAT_B8G8R8_UNORM:
-		case VK_FORMAT_B8G8R8A8_UNORM:
-		case VK_FORMAT_R8G8B8A8_UNORM:
-		case VK_FORMAT_B8G8R8_SRGB:
-		case VK_FORMAT_R8G8B8A8_SRGB:
-		case VK_FORMAT_B8G8R8A8_SRGB:
-		case VK_FORMAT_R32_SFLOAT:
-		case VK_FORMAT_R32G32_SFLOAT:
-		case VK_FORMAT_R32G32B32A32_SFLOAT:
-		case VK_FORMAT_R8_UNORM:
 		case VK_FORMAT_R16_UNORM:
-		case VK_FORMAT_R8_SRGB:
 		case VK_FORMAT_R16_SNORM:
-		case VK_FORMAT_R16G16_UNORM:
-		case VK_FORMAT_R16G16_SNORM:
-		case VK_FORMAT_R16G16B16A16_UNORM:
 		case VK_FORMAT_R16_SINT:
 		case VK_FORMAT_R16_UINT:
 		case VK_FORMAT_R16_SFLOAT:
-		case VK_FORMAT_R16G16_SINT:
-		case VK_FORMAT_R16G16_UINT:
-		case VK_FORMAT_R16G16_SFLOAT:
-		case VK_FORMAT_R16G16B16A16_SINT:
-		case VK_FORMAT_R16G16B16A16_UINT:
-		case VK_FORMAT_R16G16B16A16_SFLOAT:
-		case VK_FORMAT_G8_B8_R8_3PLANE_420_UNORM:
-		case VK_FORMAT_G8_B8R8_2PLANE_420_UNORM:
-		case VK_FORMAT_A2B10G10R10_UNORM_PACK32:
-		case VK_FORMAT_A2B10G10R10_UINT_PACK32:
-		case VK_FORMAT_A2R10G10B10_UNORM_PACK32:
-		case VK_FORMAT_A2R10G10B10_UINT_PACK32:
-		case VK_FORMAT_E5B9G9R9_UFLOAT_PACK32:
-		case VK_FORMAT_B10G11R11_UFLOAT_PACK32:
 		case VK_FORMAT_D16_UNORM:
-		case VK_FORMAT_S8_UINT:
 			return false;
 		default:
 			UNSUPPORTED("Format: %d", int(format));
@@ -2549,6 +2529,57 @@ bool Format::isRGBComponent(int component) const
 	}
 
 	return false;
+}
+
+static constexpr uint8_t pack(VkFormat format)
+{
+	if(format > VK_FORMAT_G16_B16_R16_3PLANE_444_UNORM)
+	{
+		return 0;
+	}
+
+	// 0 - 184 direct mapping
+	if(format >= 0 && format <= VK_FORMAT_ASTC_12x12_SRGB_BLOCK)
+	{
+		return uint8_t(format);
+	}
+
+	// 10001560xx -> 185 - 218
+	if(format >= VK_FORMAT_G8B8G8R8_422_UNORM && format <= VK_FORMAT_G16_B16_R16_3PLANE_444_UNORM)
+	{
+		return uint8_t(format - VK_FORMAT_G8B8G8R8_422_UNORM + 185);
+	}
+
+	// 100005400x -> 219 - 226
+	if(format >= VK_FORMAT_PVRTC1_2BPP_UNORM_BLOCK_IMG && format <= VK_FORMAT_PVRTC2_4BPP_SRGB_BLOCK_IMG)
+	{
+		return uint8_t(format - VK_FORMAT_PVRTC1_2BPP_UNORM_BLOCK_IMG + 219);
+	}
+
+	// 10000660xx -> 227 - 240
+	if(format >= VK_FORMAT_ASTC_4x4_SFLOAT_BLOCK_EXT && format <= VK_FORMAT_ASTC_12x12_SFLOAT_BLOCK_EXT)
+	{
+		return uint8_t(format - VK_FORMAT_ASTC_4x4_SFLOAT_BLOCK_EXT + 227);
+	}
+
+	return 0;
+}
+
+static_assert(pack(VK_FORMAT_UNDEFINED) == 0, "Incorrect VkFormat packed value");
+static_assert(pack(VK_FORMAT_ASTC_12x12_SRGB_BLOCK) == 184, "Incorrect VkFormat packed value");
+static_assert(pack(VK_FORMAT_G8B8G8R8_422_UNORM) == 185, "Incorrect VkFormat packed value");
+static_assert(pack(VK_FORMAT_G16_B16_R16_3PLANE_444_UNORM) == 218, "Incorrect VkFormat packed value");
+static_assert(pack(VK_FORMAT_PVRTC1_2BPP_UNORM_BLOCK_IMG) == 219, "Incorrect VkFormat packed value");
+static_assert(pack(VK_FORMAT_PVRTC2_4BPP_SRGB_BLOCK_IMG) == 226, "Incorrect VkFormat packed value");
+static_assert(pack(VK_FORMAT_ASTC_4x4_SFLOAT_BLOCK_EXT) == 227, "Incorrect VkFormat packed value");
+static_assert(pack(VK_FORMAT_ASTC_12x12_SFLOAT_BLOCK_EXT) == 240, "Incorrect VkFormat packed value");
+
+uint8_t Format::mapTo8bit(VkFormat format)
+{
+	ASSERT(format <= VK_FORMAT_G16_B16_R16_3PLANE_444_UNORM);
+	uint8_t packed = pack(format);
+	ASSERT_MSG(packed > 0, "Update VkFormat to uint8_t mapping");
+	return packed;
 }
 
 }  // namespace vk

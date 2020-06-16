@@ -13,6 +13,7 @@
 // limitations under the License.
 
 #include "VkImage.hpp"
+
 #include "VkBuffer.hpp"
 #include "VkDevice.hpp"
 #include "VkDeviceMemory.hpp"
@@ -20,11 +21,12 @@
 #include "Device/BC_Decoder.hpp"
 #include "Device/Blitter.hpp"
 #include "Device/ETC_Decoder.hpp"
-#include <cstring>
 
 #ifdef __ANDROID__
 #	include "System/GrallocAndroid.hpp"
 #endif
+
+#include <cstring>
 
 namespace {
 
@@ -76,6 +78,12 @@ int GetBCn(const vk::Format &format)
 		case VK_FORMAT_BC5_UNORM_BLOCK:
 		case VK_FORMAT_BC5_SNORM_BLOCK:
 			return 5;
+		case VK_FORMAT_BC6H_UFLOAT_BLOCK:
+		case VK_FORMAT_BC6H_SFLOAT_BLOCK:
+			return 6;
+		case VK_FORMAT_BC7_UNORM_BLOCK:
+		case VK_FORMAT_BC7_SRGB_BLOCK:
+			return 7;
 		default:
 			UNSUPPORTED("format: %d", int(format));
 			return 0;
@@ -84,7 +92,7 @@ int GetBCn(const vk::Format &format)
 
 // Returns true for BC1 if we have an RGB format, false for RGBA
 // Returns true for BC4 and BC5 if we have an unsigned format, false for signed
-// Ignored by BC2 and BC3
+// Ignored by BC2, BC3, BC6 and BC7
 bool GetNoAlphaOrUnsigned(const vk::Format &format)
 {
 	switch(format)
@@ -102,6 +110,10 @@ bool GetNoAlphaOrUnsigned(const vk::Format &format)
 		case VK_FORMAT_BC3_SRGB_BLOCK:
 		case VK_FORMAT_BC4_SNORM_BLOCK:
 		case VK_FORMAT_BC5_SNORM_BLOCK:
+		case VK_FORMAT_BC6H_UFLOAT_BLOCK:
+		case VK_FORMAT_BC6H_SFLOAT_BLOCK:
+		case VK_FORMAT_BC7_SRGB_BLOCK:
+		case VK_FORMAT_BC7_UNORM_BLOCK:
 			return false;
 		default:
 			UNSUPPORTED("format: %d", int(format));
@@ -164,6 +176,42 @@ const VkMemoryRequirements Image::getMemoryRequirements() const
 	memoryRequirements.size = getStorageSize(format.getAspects()) +
 	                          (decompressedImage ? decompressedImage->getStorageSize(decompressedImage->format.getAspects()) : 0);
 	return memoryRequirements;
+}
+
+size_t Image::getSizeInBytes(const VkImageSubresourceRange &subresourceRange) const
+{
+	size_t size = 0;
+	uint32_t lastLayer = getLastLayerIndex(subresourceRange);
+	uint32_t lastMipLevel = getLastMipLevel(subresourceRange);
+	uint32_t layerCount = lastLayer - subresourceRange.baseArrayLayer + 1;
+	uint32_t mipLevelCount = lastMipLevel - subresourceRange.baseMipLevel + 1;
+
+	auto aspect = static_cast<VkImageAspectFlagBits>(subresourceRange.aspectMask);
+
+	if(layerCount > 1)
+	{
+		if(mipLevelCount < mipLevels)  // Compute size for all layers except the last one, then add relevant mip level sizes only for last layer
+		{
+			size = (layerCount - 1) * getLayerSize(aspect);
+			for(uint32_t mipLevel = subresourceRange.baseMipLevel; mipLevel <= lastMipLevel; ++mipLevel)
+			{
+				size += getMultiSampledLevelSize(aspect, mipLevel);
+			}
+		}
+		else  // All mip levels used, compute full layer sizes
+		{
+			size = layerCount * getLayerSize(aspect);
+		}
+	}
+	else  // Single layer, add all mip levels in the subresource range
+	{
+		for(uint32_t mipLevel = subresourceRange.baseMipLevel; mipLevel <= lastMipLevel; ++mipLevel)
+		{
+			size += getMultiSampledLevelSize(aspect, mipLevel);
+		}
+	}
+
+	return size;
 }
 
 bool Image::canBindToMemory(DeviceMemory *pDeviceMemory) const
@@ -841,6 +889,14 @@ const Image *Image::getSampledImage(const vk::Format &imageViewFormat) const
 void Image::blit(Image *dstImage, const VkImageBlit &region, VkFilter filter) const
 {
 	device->getBlitter()->blit(this, dstImage, region, filter);
+	VkImageSubresourceRange subresourceRange = {
+		region.dstSubresource.aspectMask,
+		region.dstSubresource.mipLevel,
+		1,
+		region.dstSubresource.baseArrayLayer,
+		region.dstSubresource.layerCount
+	};
+	dstImage->prepareForSampling(subresourceRange);
 }
 
 void Image::blitToBuffer(VkImageSubresourceLayers subresource, VkOffset3D offset, VkExtent3D extent, uint8_t *dst, int bufferRowPitch, int bufferSlicePitch) const
@@ -984,6 +1040,10 @@ void Image::prepareForSampling(const VkImageSubresourceRange &subresourceRange)
 			case VK_FORMAT_BC4_SNORM_BLOCK:
 			case VK_FORMAT_BC5_UNORM_BLOCK:
 			case VK_FORMAT_BC5_SNORM_BLOCK:
+			case VK_FORMAT_BC6H_UFLOAT_BLOCK:
+			case VK_FORMAT_BC6H_SFLOAT_BLOCK:
+			case VK_FORMAT_BC7_UNORM_BLOCK:
+			case VK_FORMAT_BC7_SRGB_BLOCK:
 				decodeBC(subresourceRange);
 				break;
 			case VK_FORMAT_ASTC_4x4_UNORM_BLOCK:
@@ -1101,7 +1161,7 @@ void Image::decodeETC2(const VkImageSubresourceRange &subresourceRange) const
 				}
 
 				ETC_Decoder::Decode(source, dest, mipLevelExtent.width, mipLevelExtent.height,
-				                    mipLevelExtent.width, mipLevelExtent.height, pitchB, bytes, inputType);
+				                    pitchB, bytes, inputType);
 			}
 		}
 	}
@@ -1134,7 +1194,7 @@ void Image::decodeBC(const VkImageSubresourceRange &subresourceRange) const
 				uint8_t *dest = static_cast<uint8_t *>(decompressedImage->getTexelPointer({ 0, 0, depth }, subresourceLayers));
 
 				BC_Decoder::Decode(source, dest, mipLevelExtent.width, mipLevelExtent.height,
-				                   mipLevelExtent.width, mipLevelExtent.height, pitchB, bytes, n, noAlphaU);
+				                   pitchB, bytes, n, noAlphaU);
 			}
 		}
 	}

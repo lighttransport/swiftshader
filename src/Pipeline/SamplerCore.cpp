@@ -56,7 +56,7 @@ SamplerCore::SamplerCore(Pointer<Byte> &constants, const Sampler &state)
 {
 }
 
-Vector4f SamplerCore::sampleTexture(Pointer<Byte> &texture, Pointer<Byte> &sampler, Float4 uvw[4], Float4 &q, Float &&lodOrBias, Float4 &dsx, Float4 &dsy, Vector4f &offset, Int4 &sampleId, SamplerFunction function)
+Vector4f SamplerCore::sampleTexture(Pointer<Byte> &texture, Float4 uvw[4], Float4 &q, Float &&lodOrBias, Float4 &dsx, Float4 &dsy, Vector4f &offset, Int4 &sampleId, SamplerFunction function)
 {
 	Vector4f c;
 
@@ -84,19 +84,19 @@ Vector4f SamplerCore::sampleTexture(Pointer<Byte> &texture, Pointer<Byte> &sampl
 		{
 			if(!isCube())
 			{
-				computeLod(texture, sampler, lod, anisotropy, uDelta, vDelta, uuuu, vvvv, dsx, dsy, function);
+				computeLod(texture, lod, anisotropy, uDelta, vDelta, uuuu, vvvv, dsx, dsy, function);
 			}
 			else
 			{
-				computeLodCube(texture, sampler, lod, uvw[0], uvw[1], uvw[2], dsx, dsy, M, function);
+				computeLodCube(texture, lod, uvw[0], uvw[1], uvw[2], dsx, dsy, M, function);
 			}
 		}
 		else
 		{
-			computeLod3D(texture, sampler, lod, uuuu, vvvv, wwww, dsx, dsy, function);
+			computeLod3D(texture, lod, uuuu, vvvv, wwww, dsx, dsy, function);
 		}
 
-		Float bias = *Pointer<Float>(sampler + OFFSET(vk::Sampler, mipLodBias));
+		Float bias = state.mipLodBias;
 
 		if(function == Bias)
 		{
@@ -110,7 +110,7 @@ Vector4f SamplerCore::sampleTexture(Pointer<Byte> &texture, Pointer<Byte> &sampl
 	{
 		// Vulkan 1.1: "The absolute value of mipLodBias must be less than or equal to VkPhysicalDeviceLimits::maxSamplerLodBias"
 		// Hence no explicit clamping to maxSamplerLodBias is required in this case.
-		lod = lodOrBias + *Pointer<Float>(sampler + OFFSET(vk::Sampler, mipLodBias));
+		lod = lodOrBias + state.mipLodBias;
 	}
 	else if(function == Fetch)
 	{
@@ -131,8 +131,8 @@ Vector4f SamplerCore::sampleTexture(Pointer<Byte> &texture, Pointer<Byte> &sampl
 			c.y = Float4(lod);  // Unclamped LOD.
 		}
 
-		lod = Max(lod, *Pointer<Float>(sampler + OFFSET(vk::Sampler, minLod)));
-		lod = Min(lod, *Pointer<Float>(sampler + OFFSET(vk::Sampler, maxLod)));
+		lod = Max(lod, state.minLod);
+		lod = Min(lod, state.maxLod);
 
 		if(function == Query)
 		{
@@ -183,10 +183,10 @@ Vector4f SamplerCore::sampleTexture(Pointer<Byte> &texture, Pointer<Byte> &sampl
 				case VK_FORMAT_R8G8_SNORM:
 				case VK_FORMAT_R8G8B8A8_SNORM:
 				case VK_FORMAT_A8B8G8R8_SNORM_PACK32:
-					c.x *= Float4(1.0f / 0x7F00);
-					c.y *= Float4(1.0f / 0x7F00);
-					c.z *= Float4(1.0f / 0x7F00);
-					c.w *= Float4(1.0f / 0x7F00);
+					c.x = Max(c.x * Float4(1.0f / 0x7F00), Float4(-1.0f));
+					c.y = Max(c.y * Float4(1.0f / 0x7F00), Float4(-1.0f));
+					c.z = Max(c.z * Float4(1.0f / 0x7F00), Float4(-1.0f));
+					c.w = Max(c.w * Float4(1.0f / 0x7F00), Float4(-1.0f));
 					break;
 				case VK_FORMAT_R8_UNORM:
 				case VK_FORMAT_R8G8_UNORM:
@@ -237,10 +237,10 @@ Vector4f SamplerCore::sampleTexture(Pointer<Byte> &texture, Pointer<Byte> &sampl
 			case VK_FORMAT_R8G8_SNORM:
 			case VK_FORMAT_R8G8B8A8_SNORM:
 			case VK_FORMAT_A8B8G8R8_SNORM_PACK32:
-				c.x = Float4(cs.x) * Float4(1.0f / 0x7F00);
-				c.y = Float4(cs.y) * Float4(1.0f / 0x7F00);
-				c.z = Float4(cs.z) * Float4(1.0f / 0x7F00);
-				c.w = Float4(cs.w) * Float4(1.0f / 0x7F00);
+				c.x = Max(Float4(cs.x) * Float4(1.0f / 0x7F00), Float4(-1.0f));
+				c.y = Max(Float4(cs.y) * Float4(1.0f / 0x7F00), Float4(-1.0f));
+				c.z = Max(Float4(cs.z) * Float4(1.0f / 0x7F00), Float4(-1.0f));
+				c.w = Max(Float4(cs.w) * Float4(1.0f / 0x7F00), Float4(-1.0f));
 				break;
 			case VK_FORMAT_R8_UNORM:
 			case VK_FORMAT_R8G8_UNORM:
@@ -1160,7 +1160,7 @@ Float SamplerCore::log2(Float lod)
 	return lod;
 }
 
-void SamplerCore::computeLod(Pointer<Byte> &texture, Pointer<Byte> &sampler, Float &lod, Float &anisotropy, Float4 &uDelta, Float4 &vDelta, Float4 &uuuu, Float4 &vvvv, Float4 &dsx, Float4 &dsy, SamplerFunction function)
+void SamplerCore::computeLod(Pointer<Byte> &texture, Float &lod, Float &anisotropy, Float4 &uDelta, Float4 &vDelta, Float4 &uuuu, Float4 &vvvv, Float4 &dsx, Float4 &dsy, SamplerFunction function)
 {
 	Float4 duvdxy;
 
@@ -1198,7 +1198,7 @@ void SamplerCore::computeLod(Pointer<Byte> &texture, Pointer<Byte> &sampler, Flo
 		vDelta = As<Float4>((As<Int4>(dvdx) & mask) | ((As<Int4>(dvdy) & ~mask)));
 
 		anisotropy = lod * Rcp_pp(det);
-		anisotropy = Min(anisotropy, *Pointer<Float>(sampler + OFFSET(vk::Sampler, maxAnisotropy)));
+		anisotropy = Min(anisotropy, state.maxAnisotropy);
 
 		lod *= Rcp_pp(anisotropy * anisotropy);
 	}
@@ -1206,7 +1206,7 @@ void SamplerCore::computeLod(Pointer<Byte> &texture, Pointer<Byte> &sampler, Flo
 	lod = log2sqrt(lod);  // log2(sqrt(lod))
 }
 
-void SamplerCore::computeLodCube(Pointer<Byte> &texture, Pointer<Byte> &sampler, Float &lod, Float4 &u, Float4 &v, Float4 &w, Float4 &dsx, Float4 &dsy, Float4 &M, SamplerFunction function)
+void SamplerCore::computeLodCube(Pointer<Byte> &texture, Float &lod, Float4 &u, Float4 &v, Float4 &w, Float4 &dsx, Float4 &dsy, Float4 &M, SamplerFunction function)
 {
 	Float4 dudxy, dvdxy, dsdxy;
 
@@ -1247,7 +1247,7 @@ void SamplerCore::computeLodCube(Pointer<Byte> &texture, Pointer<Byte> &sampler,
 	lod = log2(lod);
 }
 
-void SamplerCore::computeLod3D(Pointer<Byte> &texture, Pointer<Byte> &sampler, Float &lod, Float4 &uuuu, Float4 &vvvv, Float4 &wwww, Float4 &dsx, Float4 &dsy, SamplerFunction function)
+void SamplerCore::computeLod3D(Pointer<Byte> &texture, Float &lod, Float4 &uuuu, Float4 &vvvv, Float4 &wwww, Float4 &dsx, Float4 &dsy, SamplerFunction function)
 {
 	Float4 dudxy, dvdxy, dsdxy;
 
@@ -1496,7 +1496,7 @@ Vector4s SamplerCore::sampleTexel(UInt index[4], Pointer<Byte> buffer)
 {
 	Vector4s c;
 
-	if(has16bitTextureFormat())
+	if(has16bitPackedTextureFormat())
 	{
 		c.x = Insert(c.x, Pointer<Short>(buffer)[index[0]], 0);
 		c.x = Insert(c.x, Pointer<Short>(buffer)[index[1]], 1);
@@ -2534,9 +2534,9 @@ bool SamplerCore::hasThirdCoordinate() const
 	       (state.textureType == VK_IMAGE_VIEW_TYPE_1D_ARRAY);  // Treated as 2D texture with second coordinate 0. TODO(b/134669567)
 }
 
-bool SamplerCore::has16bitTextureFormat() const
+bool SamplerCore::has16bitPackedTextureFormat() const
 {
-	return state.textureFormat.has16bitTextureFormat();
+	return state.textureFormat.has16bitPackedTextureFormat();
 }
 
 bool SamplerCore::has8bitTextureComponents() const

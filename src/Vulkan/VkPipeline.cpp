@@ -14,6 +14,7 @@
 
 #include "VkPipeline.hpp"
 
+#include "VkDestroy.hpp"
 #include "VkDevice.hpp"
 #include "VkPipelineCache.hpp"
 #include "VkPipelineLayout.hpp"
@@ -137,11 +138,19 @@ std::shared_ptr<sw::ComputeProgram> createProgram(const vk::PipelineCache::Compu
 
 namespace vk {
 
-Pipeline::Pipeline(PipelineLayout const *layout, const Device *device)
+Pipeline::Pipeline(PipelineLayout *layout, const Device *device)
     : layout(layout)
     , device(device)
     , robustBufferAccess(device->getEnabledFeatures().robustBufferAccess)
 {
+	layout->incRefCount();
+}
+
+void Pipeline::destroy(const VkAllocationCallbacks *pAllocator)
+{
+	destroyPipeline(pAllocator);
+
+	vk::release(static_cast<VkPipelineLayout>(*layout), pAllocator);
 }
 
 GraphicsPipeline::GraphicsPipeline(const VkGraphicsPipelineCreateInfo *pCreateInfo, void *mem, const Device *device)
@@ -398,10 +407,10 @@ GraphicsPipeline::GraphicsPipeline(const VkGraphicsPipelineCreateInfo *pCreateIn
 
 		if(!hasDynamicState(VK_DYNAMIC_STATE_BLEND_CONSTANTS))
 		{
-			blendConstants.r = colorBlendState->blendConstants[0];
-			blendConstants.g = colorBlendState->blendConstants[1];
-			blendConstants.b = colorBlendState->blendConstants[2];
-			blendConstants.a = colorBlendState->blendConstants[3];
+			blendConstants.x = colorBlendState->blendConstants[0];
+			blendConstants.y = colorBlendState->blendConstants[1];
+			blendConstants.z = colorBlendState->blendConstants[2];
+			blendConstants.w = colorBlendState->blendConstants[3];
 		}
 
 		for(auto i = 0u; i < colorBlendState->attachmentCount; i++)
@@ -483,21 +492,10 @@ void GraphicsPipeline::compileShaders(const VkAllocationCallbacks *pAllocator, c
 
 		if(pPipelineCache)
 		{
-			PipelineCache &pipelineCache = *pPipelineCache;
-			{
-				std::unique_lock<std::mutex> lock(pipelineCache.getShaderMutex());
-				const std::shared_ptr<sw::SpirvShader> *spirvShader = pipelineCache[key];
-				if(!spirvShader)
-				{
-					auto shader = createShader(key, module, robustBufferAccess, device->getDebuggerContext());
-					setShader(pipelineStage, shader);
-					pipelineCache.insert(key, getShader(pipelineStage));
-				}
-				else
-				{
-					setShader(pipelineStage, *spirvShader);
-				}
-			}
+			auto shader = pPipelineCache->getOrCreateShader(key, [&] {
+				return createShader(key, module, robustBufferAccess, device->getDebuggerContext());
+			});
+			setShader(pipelineStage, shader);
 		}
 		else
 		{
@@ -545,7 +543,7 @@ const VkViewport &GraphicsPipeline::getViewport() const
 	return viewport;
 }
 
-const sw::Color<float> &GraphicsPipeline::getBlendConstants() const
+const sw::float4 &GraphicsPipeline::getBlendConstants() const
 {
 	return blendConstants;
 }
@@ -583,35 +581,14 @@ void ComputePipeline::compileShaders(const VkAllocationCallbacks *pAllocator, co
 	    stage.stage, stage.pName, module->getCode(), nullptr, 0, stage.pSpecializationInfo);
 	if(pPipelineCache)
 	{
-		PipelineCache &pipelineCache = *pPipelineCache;
-		{
-			std::unique_lock<std::mutex> lock(pipelineCache.getShaderMutex());
-			const std::shared_ptr<sw::SpirvShader> *spirvShader = pipelineCache[shaderKey];
-			if(!spirvShader)
-			{
-				shader = createShader(shaderKey, module, robustBufferAccess, device->getDebuggerContext());
-				pipelineCache.insert(shaderKey, shader);
-			}
-			else
-			{
-				shader = *spirvShader;
-			}
-		}
+		shader = pPipelineCache->getOrCreateShader(shaderKey, [&] {
+			return createShader(shaderKey, module, robustBufferAccess, device->getDebuggerContext());
+		});
 
-		{
-			const PipelineCache::ComputeProgramKey programKey(shader.get(), layout);
-			std::unique_lock<std::mutex> lock(pipelineCache.getProgramMutex());
-			const std::shared_ptr<sw::ComputeProgram> *computeProgram = pipelineCache[programKey];
-			if(!computeProgram)
-			{
-				program = createProgram(programKey);
-				pipelineCache.insert(programKey, program);
-			}
-			else
-			{
-				program = *computeProgram;
-			}
-		}
+		const PipelineCache::ComputeProgramKey programKey(shader.get(), layout);
+		program = pPipelineCache->getOrCreateComputeProgram(programKey, [&] {
+			return createProgram(programKey);
+		});
 	}
 	else
 	{

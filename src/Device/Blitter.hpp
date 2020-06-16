@@ -18,10 +18,12 @@
 #include "Memset.hpp"
 #include "RoutineCache.hpp"
 #include "Reactor/Reactor.hpp"
-#include "Vulkan/VkFormat.h"
+#include "Vulkan/VkFormat.hpp"
+
+#include "marl/mutex.h"
+#include "marl/tsa.h"
 
 #include <cstring>
-#include <mutex>
 
 namespace vk {
 
@@ -89,17 +91,13 @@ class Blitter
 		    , destSamples(destSamples)
 		{}
 
-		bool operator==(const State &state) const
-		{
-			static_assert(is_memcmparable<State>::value, "Cannot memcmp State");
-			return memcmp(this, &state, sizeof(State)) == 0;
-		}
-
 		vk::Format sourceFormat;
 		vk::Format destFormat;
 		int srcSamples = 0;
 		int destSamples = 0;
+		bool filter3D = false;
 	};
+	friend std::hash<Blitter::State>;
 
 	struct BlitData
 	{
@@ -112,16 +110,23 @@ class Blitter
 
 		float x0;
 		float y0;
+		float z0;
 		float w;
 		float h;
+		float d;
 
-		int y0d;
-		int y1d;
 		int x0d;
 		int x1d;
+		int y0d;
+		int y1d;
+		int z0d;
+		int z1d;
 
 		int sWidth;
 		int sHeight;
+		int sDepth;
+
+		bool filter3D;
 	};
 
 	struct CubeBorderData
@@ -161,6 +166,7 @@ private:
 	void write(Int4 &color, Pointer<Byte> element, const State &state);
 	static void ApplyScaleAndClamp(Float4 &value, const State &state, bool preScaled = false);
 	static Int ComputeOffset(Int &x, Int &y, Int &pitchB, int bytes);
+	static Int ComputeOffset(Int &x, Int &y, Int &z, Int &sliceB, Int &pitchB, int bytes);
 	static Float4 LinearToSRGB(const Float4 &color);
 	static Float4 sRGBtoLinear(const Float4 &color);
 
@@ -168,6 +174,9 @@ private:
 	using BlitRoutineType = BlitFunction::RoutineType;
 	BlitRoutineType getBlitRoutine(const State &state);
 	BlitRoutineType generate(const State &state);
+	Float4 sample(Pointer<Byte> &source, Float &x, Float &y, Float &z,
+	              Int &sWidth, Int &sHeight, Int &sDepth,
+	              Int &sSliceB, Int &sPitchB, const State &state);
 
 	using CornerUpdateFunction = FunctionT<void(const CubeBorderData *)>;
 	using CornerUpdateRoutineType = CornerUpdateFunction::RoutineType;
@@ -179,12 +188,31 @@ private:
 	                  const VkImageSubresourceLayers &dstSubresourceLayers, Edge dstEdge,
 	                  const VkImageSubresourceLayers &srcSubresourceLayers, Edge srcEdge);
 
-	std::mutex blitMutex;
-	RoutineCacheT<State, BlitFunction::CFunctionType> blitCache;  // guarded by blitMutex
-	std::mutex cornerUpdateMutex;
-	RoutineCacheT<State, CornerUpdateFunction::CFunctionType> cornerUpdateCache;  // guarded by cornerUpdateMutex
+	marl::mutex blitMutex;
+	RoutineCache<State, BlitFunction::CFunctionType> blitCache GUARDED_BY(blitMutex);
+
+	marl::mutex cornerUpdateMutex;
+	RoutineCache<State, CornerUpdateFunction::CFunctionType> cornerUpdateCache GUARDED_BY(cornerUpdateMutex);
 };
 
 }  // namespace sw
+
+namespace std {
+
+template<>
+struct hash<sw::Blitter::State>
+{
+	uint64_t operator()(const sw::Blitter::State &state) const
+	{
+		uint64_t hash = state.sourceFormat;
+		hash = hash * 31 + state.destFormat;
+		hash = hash * 31 + state.srcSamples;
+		hash = hash * 31 + state.destSamples;
+		hash = hash * 31 + state.filter3D;
+		return hash;
+	}
+};
+
+}  // namespace std
 
 #endif  // sw_Blitter_hpp
