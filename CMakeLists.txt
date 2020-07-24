@@ -108,16 +108,16 @@ function (set_if_not_defined name value)
     endif()
 endfunction()
 
-option_if_not_defined(SWIFTSHADER_BUILD_EGL "Build the EGL library" TRUE)
-option_if_not_defined(SWIFTSHADER_BUILD_GLESv2 "Build the OpenGL ES 2 library" TRUE)
-option_if_not_defined(SWIFTSHADER_BUILD_GLES_CM "Build the OpenGL ES 1.1 library" TRUE)
+option_if_not_defined(SWIFTSHADER_BUILD_EGL "Build the EGL library" FALSE)
+option_if_not_defined(SWIFTSHADER_BUILD_GLESv2 "Build the OpenGL ES 2 library" FALSE)
+option_if_not_defined(SWIFTSHADER_BUILD_GLES_CM "Build the OpenGL ES 1.1 library" FALSE)
 option_if_not_defined(SWIFTSHADER_BUILD_VULKAN "Build the Vulkan library" TRUE)
-option_if_not_defined(SWIFTSHADER_BUILD_PVR "Build the PowerVR examples" TRUE)
+option_if_not_defined(SWIFTSHADER_BUILD_PVR "Build the PowerVR examples" FALSE)
 option_if_not_defined(SWIFTSHADER_GET_PVR "Check out the PowerVR submodule" FALSE)
 
 option_if_not_defined(SWIFTSHADER_USE_GROUP_SOURCES "Group the source files in a folder tree for Visual Studio" TRUE)
 
-option_if_not_defined(SWIFTSHADER_BUILD_TESTS "Build unit tests" TRUE)
+option_if_not_defined(SWIFTSHADER_BUILD_TESTS "Build unit tests" FALSE)
 option_if_not_defined(SWIFTSHADER_BUILD_BENCHMARKS "Build benchmarks" FALSE)
 
 option_if_not_defined(SWIFTSHADER_MSAN "Build with memory sanitizer" FALSE)
@@ -132,8 +132,10 @@ option_if_not_defined(REACTOR_EMIT_PRINT_LOCATION "Emit printing of location inf
 option_if_not_defined(REACTOR_ENABLE_PRINT "Enable RR_PRINT macros" FALSE)
 option_if_not_defined(REACTOR_VERIFY_LLVM_IR "Check reactor-generated LLVM IR is valid even in release builds" FALSE)
 option_if_not_defined(SWIFTSHADER_LESS_DEBUG_INFO "Generate less debug info to reduce file size" FALSE)
-option_if_not_defined(SWIFTSHADER_ENABLE_VULKAN_DEBUGGER "Enable Vulkan debugger support" FALSE)
+option_if_not_defined(SWIFTSHADER_ENABLE_VULKAN_DEBUGGER "Enable Vulkan debugger support" TRUE) # TODO(LTE): Set off by default?
 option_if_not_defined(SWIFTSHADER_ENABLE_ASTC "Enable ASTC compressed textures support" TRUE)  # TODO(b/150130101)
+
+option_if_not_defined(SWIFTSHADER_LD "Linker used for clang compiler" "gold")
 
 set(BUILD_MARL ${SWIFTSHADER_BUILD_VULKAN})
 
@@ -258,6 +260,13 @@ macro(set_shared_library_export_map TARGET DIR)
             set_property(TARGET ${TARGET} APPEND_STRING PROPERTY LINK_FLAGS " -Wl,-undefined,error")
         endif()
     elseif(LINUX OR FUCHSIA)
+        # Need to use gold or lld for clang, otherwise link error happens for marl's protected symbol for vulkan .so 
+        if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+          if (SWIFTSHADER_LD)
+            set_property(TARGET ${TARGET} APPEND_STRING PROPERTY LINK_FLAGS " -fuse-ld=${SWIFTSHADER_LD}")
+          endif()
+        endif()
+
         # NOTE: The Fuchsia linker script is needed to export the vk_icdInitializeConnectToServiceCallback
         # entry point (a private implementation detail betwen the Fuchsia Vulkan loader and the ICD).
         if ((FUCHSIA) AND ("${TARGET}" STREQUAL "vk_swiftshader"))
