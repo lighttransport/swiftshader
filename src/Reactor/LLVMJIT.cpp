@@ -61,7 +61,13 @@ __pragma(warning(push))
 #include <unordered_map>
 
 #if defined(_WIN64)
+#if defined(__MINGW32__)
+// dummy implementation
+extern "C" void __chkstk() {
+}
+#else // Assume MSVC
         extern "C" void __chkstk();
+#endif
 #elif defined(_WIN32)
 extern "C" void _chkstk();
 #endif

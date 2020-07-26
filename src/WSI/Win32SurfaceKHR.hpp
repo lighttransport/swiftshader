@@ -22,7 +22,11 @@
 #if !defined(WIN32_LEAN_AND_MEAN)
 #	define WIN32_LEAN_AND_MEAN
 #endif  // !defined(WIN32_LEAN_AND_MEAN)
+#if defined(__MINGW32__)
+#include <windows.h>
+#else
 #include <Windows.h>
+#endif
 #include <vulkan/vulkan_win32.h>
 
 #include <map>

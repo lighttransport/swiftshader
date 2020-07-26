@@ -94,7 +94,11 @@ inline void protectPage(void* addr) {
 }  // anonymous namespace
 #elif defined(_WIN32)
 #define WIN32_LEAN_AND_MEAN 1
+#if defined(__MINGW32__)
+#include <windows.h>
+#else
 #include <Windows.h>
+#endif
 namespace {
 inline size_t pageSize() {
   static auto size = [] {

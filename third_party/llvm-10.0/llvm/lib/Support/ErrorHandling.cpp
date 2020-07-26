@@ -32,7 +32,7 @@
 #if defined(HAVE_UNISTD_H)
 # include <unistd.h>
 #endif
-#if defined(_MSC_VER)
+#if defined(_MSC_VER) || defined(__MINGW32__)
 # include <io.h>
 # include <fcntl.h>
 #endif

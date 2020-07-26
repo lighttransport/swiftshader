@@ -816,6 +816,12 @@ set(LLVM_LIST
     ${LLVM_DIR}/lib/Transforms/Vectorize/VPlanVerifier.cpp
 )
 
+if(MINGW)
+    list(APPEND LLVM_LIST
+        ${LLVM_DIR}/lib/Support/Atomic.cpp
+    )
+endif()
+
 if(ARCH STREQUAL "x86" OR ARCH STREQUAL "x86_64")
     list(APPEND LLVM_LIST
         ${LLVM_DIR}/lib/Target/X86/AsmParser/X86AsmParser.cpp
