@@ -648,14 +648,8 @@ SpirvShader::EmitResult SpirvShader::EmitImageRead(InsnIterator insn, EmitState 
 
 	auto &dst = state->createIntermediate(insn.resultId(), resultType.componentCount);
 
-	// "The value returned by a read of an invalid texel is undefined,
-	//  unless that read operation is from a buffer resource and the robustBufferAccess feature is enabled."
-	// TODO: Don't always assume a buffer resource.
-	//
-	// While we could be using OutOfBoundsBehavior::RobustBufferAccess for read operations from buffer resources,
-	// emulating the glsl function loadImage() requires that this function returns 0 when used with out of bounds
-	// coordinates, so we have to use OutOfBoundsBehavior::Nullify in that case.
-	// TODO(b/159329067): Claim VK_EXT_image_robustness
+	// VK_EXT_image_robustness requires replacing out-of-bounds access with zero.
+	// TODO(b/162327166): Only perform bounds checks when VK_EXT_image_robustness is enabled.
 	auto robustness = OutOfBoundsBehavior::Nullify;
 
 	auto texelSize = vk::Format(vkFormat).bytes();
@@ -1177,11 +1171,9 @@ SpirvShader::EmitResult SpirvShader::EmitImageWrite(InsnIterator insn, EmitState
 			break;
 	}
 
-	// SPIR-V 1.4: "If the coordinates are outside the image, the memory location that is accessed is undefined."
-
-	// Emulating the glsl function imageStore() requires that this function is noop when used with out of bounds
-	// coordinates, so we have to use OutOfBoundsBehavior::Nullify in that case.
-	// TODO(b/159329067): Claim VK_EXT_image_robustness
+	// "The integer texel coordinates are validated according to the same rules as for texel input coordinate
+	//  validation. If the texel fails integer texel coordinate validation, then the write has no effect."
+	// - https://www.khronos.org/registry/vulkan/specs/1.2/html/chap16.html#textures-output-coordinate-validation
 	auto robustness = OutOfBoundsBehavior::Nullify;
 
 	auto texelPtr = GetTexelAddress(state, imageBase, imageSizeInBytes, coordinate, imageType, binding, texelSize, 0, false, robustness);
@@ -1248,7 +1240,11 @@ SpirvShader::EmitResult SpirvShader::EmitImageTexelPointer(InsnIterator insn, Em
 	Pointer<Byte> imageBase = *Pointer<Pointer<Byte>>(binding + OFFSET(vk::StorageImageDescriptor, ptr));
 	auto imageSizeInBytes = *Pointer<Int>(binding + OFFSET(vk::StorageImageDescriptor, sizeInBytes));
 
-	auto ptr = GetTexelAddress(state, imageBase, imageSizeInBytes, coordinate, imageType, binding, sizeof(uint32_t), 0, false, OutOfBoundsBehavior::UndefinedValue);
+	// VK_EXT_image_robustness requires checking for out-of-bounds accesses.
+	// TODO(b/162327166): Only perform bounds checks when VK_EXT_image_robustness is enabled.
+	auto robustness = OutOfBoundsBehavior::Nullify;
+
+	auto ptr = GetTexelAddress(state, imageBase, imageSizeInBytes, coordinate, imageType, binding, sizeof(uint32_t), 0, false, robustness);
 
 	state->createPointer(resultId, ptr);
 
