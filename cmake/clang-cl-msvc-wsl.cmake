@@ -262,6 +262,16 @@ set(COMPILE_FLAGS
     -imsvc "\"${WINSDK_INCLUDE}/um\""
     -imsvc "\"${WINSDK_INCLUDE}/winrt\"")
 
+# for including windows.h in .rc file.
+set(CLANG_CL_RC_FLAGS
+    -fms-compatibility-version=19.11
+    -imsvc "\"${ATLMFC_INCLUDE}\""
+    -imsvc "\"${MSVC_INCLUDE}\""
+    -imsvc "\"${WINSDK_INCLUDE}/ucrt\""
+    -imsvc "\"${WINSDK_INCLUDE}/shared\""
+    -imsvc "\"${WINSDK_INCLUDE}/um\""
+    -imsvc "\"${WINSDK_INCLUDE}/winrt\"")
+
 if(case_sensitive_filesystem)
   # Ensure all sub-configures use the top-level VFS overlay instead of generating their own.
   init_user_prop(winsdk_vfs_overlay_path)
@@ -272,9 +282,12 @@ if(case_sensitive_filesystem)
   endif()
   list(APPEND COMPILE_FLAGS
        -Xclang -ivfsoverlay -Xclang "${winsdk_vfs_overlay_path}")
+  list(APPEND CLANG_CL_RC_FLAGS
+       -Xclang -ivfsoverlay -Xclang "${winsdk_vfs_overlay_path}")
 endif()
 
 string(REPLACE ";" " " COMPILE_FLAGS "${COMPILE_FLAGS}")
+string(REPLACE ";" " " CLANG_CL_RC_FLAGS "${CLANG_CL_RC_FLAGS}")
 
 # We need to preserve any flags that were passed in by the user. However, we
 # can't append to CMAKE_C_FLAGS and friends directly, because toolchain files
@@ -287,6 +300,9 @@ set(CMAKE_C_FLAGS "${_CMAKE_C_FLAGS_INITIAL} ${COMPILE_FLAGS}" CACHE STRING "" F
 
 set(_CMAKE_CXX_FLAGS_INITIAL "${CMAKE_CXX_FLAGS}" CACHE STRING "")
 set(CMAKE_CXX_FLAGS "${_CMAKE_CXX_FLAGS_INITIAL} ${COMPILE_FLAGS}" CACHE STRING "" FORCE)
+
+set(_CMAKE_RC_FLAGS_INITIAL "${CMAKE_RC_FLAGS}" CACHE STRING "")
+set(CMAKE_RC_FLAGS "${_CMAKE_RC_FLAGS_INITIAL} ${CLANG_CL_RC_FLAGS}" CACHE STRING "" FORCE)
 
 set(LINK_FLAGS
     # Prevent CMake from attempting to invoke mt.exe. It only recognizes the slashed form and not the dashed form.
